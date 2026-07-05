@@ -1,0 +1,36 @@
+# Dependencies
+node_modules
+npm-debug.log
+
+# Data files (mounted as volume at runtime)
+data
+
+# Logs
+*.log
+*.err.log
+*.out.log
+launcher-log.txt
+server-log.txt
+
+# Debug/test scripts
+test_routes.js
+find_*.js
+fix_*.js
+syntax_check.js
+new-battle-zones.js
+trash_args.json
+
+# IDE and OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Git
+.git
+.gitignore
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml

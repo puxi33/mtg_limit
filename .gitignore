@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Runtime data (SQLite database + Scryfall cache)
+data/
+
+# Logs
+*.log
+*.err.log
+*.out.log
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+.env.production

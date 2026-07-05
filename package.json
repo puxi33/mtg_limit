@@ -1,0 +1,20 @@
+{
+  "name": "mtg-limited-site",
+  "version": "2.0.0",
+  "description": "万智牌轮抓/现开/对战网站 - MTGA 风格重构版",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "serve": "node launcher.js",
+    "dev": "node launcher.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.6.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "jsonwebtoken": "^9.0.2",
+    "ws": "^8.18.0"
+  }
+}

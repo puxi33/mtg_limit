@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  mtg-server:
+    build: .
+    container_name: mtg-limited
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      # Persist SQLite database and Scryfall card cache
+      - mtg-data:/app/data
+    environment:
+      - NODE_ENV=production
+      # Change this in production!
+      - JWT_SECRET=mtg-limited-secret-key-dev-2024
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  mtg-data:
+    driver: local
