@@ -19,6 +19,85 @@ const JWT_SECRET = process.env.JWT_SECRET || 'mtg-limited-secret-key-dev-2024';
 const PORT = process.env.PORT || 3001;
 
 // ============================================================
+// Scryfall Helper: Extract card data (supports double-faced cards)
+// ============================================================
+function getCardImageUris(card) {
+  // Normal cards have image_uris at top level
+  if (card.image_uris) return card.image_uris;
+  // Double-faced cards (DFCs) have images in card_faces[0] (front face)
+  if (card.card_faces && card.card_faces.length > 0 && card.card_faces[0].image_uris) {
+    return card.card_faces[0].image_uris;
+  }
+  return null;
+}
+
+function getCardText(card) {
+  // Normal cards have oracle_text at top level
+  if (card.oracle_text) return card.oracle_text;
+  // DFCs: concatenate front and back face text
+  if (card.card_faces && card.card_faces.length > 1) {
+    const front = card.card_faces[0].oracle_text || '';
+    const back = card.card_faces[1].oracle_text || '';
+    return front + (back ? '\n---\n' + back : '');
+  }
+  if (card.card_faces && card.card_faces.length > 0) {
+    return card.card_faces[0].oracle_text || '';
+  }
+  return '';
+}
+
+function getCardManaCost(card) {
+  if (card.mana_cost) return card.mana_cost;
+  if (card.card_faces && card.card_faces.length > 0) {
+    return card.card_faces[0].mana_cost || '';
+  }
+  return '';
+}
+
+function getCardPowerToughness(card) {
+  if (card.power != null) return { power: card.power, toughness: card.toughness };
+  if (card.card_faces && card.card_faces.length > 0) {
+    const face = card.card_faces[0];
+    return { power: face.power || null, toughness: face.toughness || null };
+  }
+  return { power: null, toughness: null };
+}
+
+// Get back face image URIs for double-faced cards (DFCs)
+function getCardBackImageUris(card) {
+  if (card.card_faces && card.card_faces.length > 1 && card.card_faces[1].image_uris) {
+    return card.card_faces[1].image_uris;
+  }
+  return null;
+}
+
+// Get back face type line for double-faced cards (DFCs)
+function getCardBackType(card) {
+  if (card.card_faces && card.card_faces.length > 1) {
+    return card.card_faces[1].type_line || null;
+  }
+  return null;
+}
+
+// Get back face loyalty for double-faced cards (DFCs)
+function getCardBackLoyalty(card) {
+  if (card.card_faces && card.card_faces.length > 1) {
+    return card.card_faces[1].loyalty || null;
+  }
+  return null;
+}
+
+// Normalize card name for Scryfall API lookup:
+// "Delver of Secrets // Insectile Aberration" → "Delver of Secrets"
+// "Jace, Vryn's Prodigy // Jace, Telepath Unbound" → "Jace, Vryn's Prodigy"
+function normalizeCardName(name) {
+  if (!name) return name;
+  // Split on " // " (DFC separator) and take front face only
+  const parts = name.split(' // ');
+  return parts[0].trim();
+}
+
+// ============================================================
 // Scryfall Bulk Cache
 // ============================================================
 const SCRYFALL_CACHE_FILE = path.join(__dirname, 'data', 'scryfall-cache.json');
@@ -90,9 +169,14 @@ async function downloadBulkData() {
           text: card.oracle_text || '', power: card.power || null,
           toughness: card.toughness || null, loyalty: card.loyalty || null,
           keywords: card.keywords || [],
-          image: card.image_uris ? card.image_uris.normal : null,
-          image_small: card.image_uris ? card.image_uris.small : null,
-          image_large: card.image_uris ? card.image_uris.large : null,
+          image: getCardImageUris(card) ? getCardImageUris(card).normal : null,
+          image_small: getCardImageUris(card) ? getCardImageUris(card).small : null,
+          image_large: getCardImageUris(card) ? getCardImageUris(card).large : null,
+          image_back: getCardBackImageUris(card) ? getCardBackImageUris(card).normal : null,
+          image_small_back: getCardBackImageUris(card) ? getCardBackImageUris(card).small : null,
+          image_large_back: getCardBackImageUris(card) ? getCardBackImageUris(card).large : null,
+          type_back: getCardBackType(card) || null,
+          loyalty_back: getCardBackLoyalty(card) || null,
           set: card.set || '', set_name: card.set_name || '', scryfall_id: card.id
         });
       }
@@ -114,7 +198,9 @@ function lookupLocalCard(name) {
 }
 
 loadBulkCacheFromDisk();
-setTimeout(downloadBulkData, 3000);
+// Disabled bulk download to avoid OOM on 1GB containers.
+// Card lookups use the per-card Scryfall API instead.
+// setTimeout(downloadBulkData, 3000);
 
 // ============================================================
 // Scryfall API fallback (per-card)
@@ -140,25 +226,38 @@ async function fetchCardFromScryfall(cardName) {
     const card = {
       id: data.id || `sf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       name: data.name,
-      manaCost: data.mana_cost || '',
+      manaCost: getCardManaCost(data),
       cmc: data.cmc || 0,
       type: data.type_line || '',
       colors: data.colors || [],
       color_identity: data.color_identity || [],
       rarity: data.rarity || 'common',
-      text: data.oracle_text || '',
-      power: data.power || null,
-      toughness: data.toughness || null,
+      text: getCardText(data),
+      power: getCardPowerToughness(data).power,
+      toughness: getCardPowerToughness(data).toughness,
       loyalty: data.loyalty || null,
       keywords: data.keywords || [],
-      image: data.image_uris ? data.image_uris.normal : null,
-      image_small: data.image_uris ? data.image_uris.small : null,
-      image_large: data.image_uris ? data.image_uris.large : null,
+      image: getCardImageUris(data) ? getCardImageUris(data).normal : null,
+      image_small: getCardImageUris(data) ? getCardImageUris(data).small : null,
+      image_large: getCardImageUris(data) ? getCardImageUris(data).large : null,
+      image_back: getCardBackImageUris(data) ? getCardBackImageUris(data).normal : null,
+      image_small_back: getCardBackImageUris(data) ? getCardBackImageUris(data).small : null,
+      image_large_back: getCardBackImageUris(data) ? getCardBackImageUris(data).large : null,
+      type_back: getCardBackType(data) || null,
+      loyalty_back: getCardBackLoyalty(data) || null,
       set: data.set || '',
       set_name: data.set_name || '',
       scryfall_id: data.id || null
     };
     scryfallCache.set(cacheKey, card);
+    // For DFCs, also cache under each face name
+    if (data.card_faces && data.card_faces.length > 1) {
+      for (const face of data.card_faces) {
+        if (face.name && face.name !== data.name) {
+          scryfallCache.set(face.name.toLowerCase(), card);
+        }
+      }
+    }
     await sleep(80);
     return card;
   } catch (err) {
@@ -184,16 +283,127 @@ async function fetchCardsFromText(lines) {
     entries.push({ cardName, count });
   }
   const uniqueNames = [...new Set(entries.map(e => e.cardName))];
-  const CONCURRENCY = 5;
+
+  // Check caches first, collect names that need API lookup
   const fetchedMap = new Map();
-  for (let i = 0; i < uniqueNames.length; i += CONCURRENCY) {
-    const batch = uniqueNames.slice(i, i + CONCURRENCY);
-    const batchResults = await Promise.all(
-      batch.map(async (name) => ({ name, card: await fetchCardFromScryfall(name) }))
-    );
-    for (const { name, card } of batchResults) fetchedMap.set(name, card);
-    if (i + CONCURRENCY < uniqueNames.length) await sleep(100);
+  const namesToFetch = [];
+  for (const name of uniqueNames) {
+    const cached = lookupLocalCard(name);
+    if (cached) {
+      fetchedMap.set(name, cached);
+    } else {
+      const cacheKey = name.toLowerCase().trim();
+      if (scryfallCache.has(cacheKey)) {
+        fetchedMap.set(name, scryfallCache.get(cacheKey));
+      } else {
+        namesToFetch.push(name);
+      }
+    }
   }
+
+  // Use Scryfall /cards/collection endpoint (up to 75 cards per request)
+  const BATCH_SIZE = 75;
+  for (let i = 0; i < namesToFetch.length; i += BATCH_SIZE) {
+    const batch = namesToFetch.slice(i, i + BATCH_SIZE);
+    // Normalize names for API: "Delver of Secrets // Insectile Aberration" → "Delver of Secrets"
+    const identifiers = batch.map(name => ({ name: normalizeCardName(name) }));
+    try {
+      const response = await fetch('https://api.scryfall.com/cards/collection', {
+        method: 'POST',
+        headers: { 'User-Agent': 'MTGLimitedSite/2.0', 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identifiers })
+      });
+      if (!response.ok) {
+        console.warn(`Scryfall collection batch ${Math.floor(i/BATCH_SIZE)+1} failed: ${response.status}`);
+        // Fall back to individual fetches for this batch
+        for (const name of batch) {
+          const card = await fetchCardFromScryfall(name);
+          if (card) fetchedMap.set(name, card);
+          await sleep(100);
+        }
+      } else {
+        const data = await response.json();
+        const foundCards = data.data || [];
+        const foundNames = new Set();
+        for (const sfCard of foundCards) {
+          if (!sfCard.name) continue;
+          foundNames.add(sfCard.name);
+          const card = {
+            id: sfCard.id || `sf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            name: sfCard.name,
+            manaCost: getCardManaCost(sfCard),
+            cmc: sfCard.cmc || 0,
+            type: sfCard.type_line || '',
+            colors: sfCard.colors || [],
+            color_identity: sfCard.color_identity || [],
+            rarity: sfCard.rarity || 'common',
+            text: getCardText(sfCard),
+            power: getCardPowerToughness(sfCard).power,
+            toughness: getCardPowerToughness(sfCard).toughness,
+            loyalty: sfCard.loyalty || null,
+            keywords: sfCard.keywords || [],
+            image: getCardImageUris(sfCard) ? getCardImageUris(sfCard).normal : null,
+            image_small: getCardImageUris(sfCard) ? getCardImageUris(sfCard).small : null,
+            image_large: getCardImageUris(sfCard) ? getCardImageUris(sfCard).large : null,
+            image_back: getCardBackImageUris(sfCard) ? getCardBackImageUris(sfCard).normal : null,
+            image_small_back: getCardBackImageUris(sfCard) ? getCardBackImageUris(sfCard).small : null,
+            image_large_back: getCardBackImageUris(sfCard) ? getCardBackImageUris(sfCard).large : null,
+            type_back: getCardBackType(sfCard) || null,
+            loyalty_back: getCardBackLoyalty(sfCard) || null,
+            set: sfCard.set || '',
+            set_name: sfCard.set_name || '',
+            scryfall_id: sfCard.id || null
+          };
+          // Store under full name (e.g. "Delver of Secrets // Insectile Aberration")
+          fetchedMap.set(sfCard.name, card);
+          scryfallCache.set(sfCard.name.toLowerCase(), card);
+          // For DFCs, also store under each face name for lookup matching
+          if (sfCard.card_faces && sfCard.card_faces.length > 1) {
+            for (const face of sfCard.card_faces) {
+              if (face.name && face.name !== sfCard.name) {
+                fetchedMap.set(face.name, card);
+                scryfallCache.set(face.name.toLowerCase(), card);
+              }
+            }
+          }
+        }
+        // Handle not_found cards
+        if (data.not_found && data.not_found.length > 0) {
+          for (const item of data.not_found) {
+            // not_found can be numeric indices or objects with identifier
+            let name = null;
+            if (typeof item === 'number') {
+              name = batch[item];
+            } else if (item && typeof item === 'object') {
+              name = item.identifier ? item.identifier.name : null;
+            }
+            if (!name) continue;
+            console.warn(`Scryfall not found: "${name}"`);
+            // Try individual fuzzy search as fallback
+            const card = await fetchCardFromScryfall(name);
+            if (card) {
+              fetchedMap.set(name, card);
+              // Also store under full DFC name and face names
+              if (card.name && card.name !== name) {
+                fetchedMap.set(card.name, card);
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`Scryfall collection batch error:`, err.message);
+      // Fall back to individual fetches
+      for (const name of batch) {
+        const card = await fetchCardFromScryfall(name);
+        if (card) fetchedMap.set(name, card);
+        await sleep(100);
+      }
+    }
+    // Rate limit between batches
+    if (i + BATCH_SIZE < namesToFetch.length) await sleep(500);
+  }
+
   for (const { cardName, count } of entries) {
     const cardData = fetchedMap.get(cardName);
     if (cardData) {
@@ -201,15 +411,7 @@ async function fetchCardsFromText(lines) {
         results.push({ ...cardData, id: `${cardData.id}_${i}` });
       }
     } else {
-      errors.push(cardName);
-      for (let i = 0; i < count; i++) {
-        results.push({
-          id: `unknown_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          name: cardName, manaCost: '', cmc: 0, type: 'Unknown',
-          colors: [], rarity: 'common', text: '未找到卡牌数据',
-          power: null, toughness: null, image: null, image_small: null, keywords: []
-        });
-      }
+      if (!errors.includes(cardName)) errors.push(cardName);
     }
   }
   return { cards: results, errors };
@@ -221,8 +423,23 @@ async function fetchCardsFromText(lines) {
 const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 const db = new Database(path.join(dataDir, 'mtg.db'));
-db.pragma('journal_mode = WAL');
+db.pragma('journal_mode = DELETE');  // Use DELETE mode for OSS/FUSE compatibility
+db.pragma('synchronous = FULL');  // FULL sync for FUSE reliability
 db.pragma('foreign_keys = ON');
+
+// Graceful shutdown: close database properly before exit
+function gracefulShutdown(signal) {
+  console.log(`[shutdown] Received ${signal}, closing database...`);
+  try {
+    db.close();
+    console.log('[shutdown] Database closed successfully');
+  } catch (e) {
+    console.error('[shutdown] Database close error:', e.message);
+  }
+  process.exit(0);
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // Schema migrations for tables that may pre-date the new columns.
 // SQLite has no IF NOT EXISTS for ADD COLUMN, so check pragma_table_info first.
@@ -233,13 +450,6 @@ function ensureColumn(table, column, definition) {
     console.log(`[migrate] Added ${table}.${column}`);
   }
 }
-ensureColumn('participants', 'bot_state', "bot_state TEXT DEFAULT '{}'");
-ensureColumn('events', 'picks_this_round', "picks_this_round TEXT DEFAULT '[]'");
-ensureColumn('battles', 'event_id', "event_id INTEGER");
-ensureColumn('battles', 'player1_wins', "player1_wins INTEGER DEFAULT 0");
-ensureColumn('battles', 'player2_wins', "player2_wins INTEGER DEFAULT 0");
-ensureColumn('battles', 'current_game', "current_game INTEGER DEFAULT 1");
-ensureColumn('battles', 'round', "round INTEGER DEFAULT 1");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
@@ -293,6 +503,7 @@ db.exec(`
     name TEXT NOT NULL,
     main_deck TEXT DEFAULT '[]',
     sideboard TEXT DEFAULT '[]',
+    outside_game TEXT DEFAULT '[]',
     event_id INTEGER,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id)
@@ -315,9 +526,28 @@ db.exec(`
   );
 `);
 
+// Schema migrations for tables that may pre-date the new columns.
+ensureColumn('participants', 'bot_state', "bot_state TEXT DEFAULT '{}'");
+ensureColumn('events', 'picks_this_round', "picks_this_round TEXT DEFAULT '[]'");
+ensureColumn('events', 'set_code', "set_code TEXT");
+ensureColumn('events', 'set_name', "set_name TEXT");
+ensureColumn('battles', 'event_id', "event_id INTEGER");
+ensureColumn('battles', 'player1_wins', "player1_wins INTEGER DEFAULT 0");
+ensureColumn('battles', 'player2_wins', "player2_wins INTEGER DEFAULT 0");
+ensureColumn('battles', 'current_game', "current_game INTEGER DEFAULT 1");
+ensureColumn('battles', 'round', "round INTEGER DEFAULT 1");
+ensureColumn('decks', 'outside_game', "outside_game TEXT DEFAULT '[]'");
+
 // ============================================================
 // Middleware
 // ============================================================
+app.set('trust proxy', true);
+app.use((req, res, next) => {
+  if (req.headers['x-forwarded-proto'] !== 'https' && req.hostname !== 'localhost' && req.hostname !== '127.0.0.1') {
+    return res.redirect(301, `https://${req.hostname}${req.url}`);
+  }
+  next();
+});
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
@@ -333,6 +563,193 @@ function shuffle(arr) {
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
+}
+
+// ============================================================
+// MTG SETS & BOOSTER GENERATION
+// ============================================================
+
+// Cache for set data (code → {sets, cards, timestamp})
+const _setsCache = { sets: null, timestamp: 0 };
+const _setCardsCache = {}; // code → {cards: {common,uncommon,rare,mythic,basic_land}, timestamp}
+const SETS_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
+// Fetch all MTG sets from Scryfall
+async function fetchAllSets() {
+  if (_setsCache.sets && Date.now() - _setsCache.timestamp < SETS_CACHE_TTL) {
+    return _setsCache.sets;
+  }
+  try {
+    const response = await fetch('https://api.scryfall.com/sets', {
+      headers: { 'User-Agent': 'MTGLimitedSite/2.0', 'Accept': 'application/json' }
+    });
+    if (!response.ok) throw new Error('Scryfall sets API error: ' + response.status);
+    const data = await response.json();
+    // Filter: only standard-legal sets (type === 'expansion' or 'core'), exclude alchemy/token/promo
+    const validTypes = ['expansion', 'core', 'draft_innovation', 'masters', 'commander', 'funny'];
+    const sets = (data.data || [])
+      .filter(s => validTypes.includes(s.set_type))
+      .filter(s => s.card_count >= 50)
+      .map(s => ({
+        code: s.code, name: s.name, set_type: s.set_type,
+        released_at: s.released_at, icon_svg_uri: s.icon_svg_uri,
+        card_count: s.card_count
+      }))
+      .sort((a, b) => (b.released_at || '').localeCompare(a.released_at || ''));
+    _setsCache.sets = sets;
+    _setsCache.timestamp = Date.now();
+    return sets;
+  } catch (err) {
+    console.error('fetchAllSets error:', err.message);
+    if (_setsCache.sets) return _setsCache.sets; // Return stale cache
+    return [];
+  }
+}
+
+// Fetch all cards from a specific set, grouped by rarity
+async function fetchSetCards(setCode) {
+  const code = setCode.toLowerCase();
+  const cached = _setCardsCache[code];
+  if (cached && Date.now() - cached.timestamp < SETS_CACHE_TTL) {
+    return cached.cards;
+  }
+
+  const allCards = [];
+  let url = `https://api.scryfall.com/cards/search?q=set:${code}&order=set&unique=prints`;
+  let page = 0;
+
+  while (url && page < 20) { // Max 20 pages to avoid infinite loops
+    try {
+      const response = await fetch(url, {
+        headers: { 'User-Agent': 'MTGLimitedSite/2.0', 'Accept': 'application/json' }
+      });
+      if (!response.ok) break;
+      const data = await response.json();
+      for (const c of (data.data || [])) {
+        // Skip tokens, emblems, and double-sided weirdness
+        if (c.layout === 'token' || c.layout === 'double_faced_token') continue;
+        if (c.type_line && c.type_line.includes('Token')) continue;
+
+        const card = {
+          id: c.id, name: c.name,
+          manaCost: getCardManaCost(c), cmc: c.cmc || 0,
+          type: c.type_line || '',
+          colors: c.colors || [], color_identity: c.color_identity || [],
+          rarity: c.rarity || 'common',
+          text: getCardText(c),
+          power: getCardPowerToughness(c).power,
+          toughness: getCardPowerToughness(c).toughness,
+          loyalty: c.loyalty || null,
+          keywords: c.keywords || [],
+          image: getCardImageUris(c) ? getCardImageUris(c).normal : null,
+          image_small: getCardImageUris(c) ? getCardImageUris(c).small : null,
+          image_back: getCardBackImageUris(c) ? getCardBackImageUris(c).normal : null,
+          image_small_back: getCardBackImageUris(c) ? getCardBackImageUris(c).small : null,
+          type_back: getCardBackType(c) || null,
+          loyalty_back: getCardBackLoyalty(c) || null,
+          set: c.set || '', set_name: c.set_name || '',
+          scryfall_id: c.id
+        };
+        allCards.push(card);
+      }
+      url = data.has_more ? data.next_page : null;
+      page++;
+      if (url) await sleep(300); // Rate limit
+    } catch (err) {
+      console.error(`fetchSetCards page ${page} error:`, err.message);
+      break;
+    }
+  }
+
+  // Group by rarity
+  const grouped = {
+    common: allCards.filter(c => c.rarity === 'common'),
+    uncommon: allCards.filter(c => c.rarity === 'uncommon'),
+    rare: allCards.filter(c => c.rarity === 'rare'),
+    mythic: allCards.filter(c => c.rarity === 'mythic'),
+    basic_land: allCards.filter(c => c.type && c.type.includes('Basic Land') && !c.type.includes('Token'))
+  };
+
+  // If no basic lands in set, use generic basic lands
+  if (grouped.basic_land.length === 0) {
+    grouped.basic_land = [
+      {id:'basic_plains',name:'Plains',manaCost:'',cmc:0,type:'Basic Land - Plains',colors:['W'],color_identity:['W'],rarity:'common',text:'',power:null,toughness:null,loyalty:null,keywords:[],image:'https://cards.scryfall.io/normal/front/3/b/3bc7c2b6-0fa4-4a07-a9c4-c1b6827a6670.jpg?1562403871',image_small:'https://cards.scryfall.io/small/front/3/b/3bc7c2b6-0fa4-4a07-a9c4-c1b6827a6670.jpg?1562403871',image_back:null,image_small_back:null,type_back:null,loyalty_back:null,set:'',set_name:''},
+      {id:'basic_island',name:'Island',manaCost:'',cmc:0,type:'Basic Land - Island',colors:['U'],color_identity:['U'],rarity:'common',text:'',power:null,toughness:null,loyalty:null,keywords:[],image:'https://cards.scryfall.io/normal/front/7/c/7c2163ea-5008-4b91-9b09-7fb8a27e9e6b.jpg?1562407526',image_small:'https://cards.scryfall.io/small/front/7/c/7c2163ea-5008-4b91-9b09-7fb8a27e9e6b.jpg?1562407526',image_back:null,image_small_back:null,type_back:null,loyalty_back:null,set:'',set_name:''},
+      {id:'basic_swamp',name:'Swamp',manaCost:'',cmc:0,type:'Basic Land - Swamp',colors:['B'],color_identity:['B'],rarity:'common',text:'',power:null,toughness:null,loyalty:null,keywords:[],image:'https://cards.scryfall.io/normal/front/6/0/60fa413b-5dd3-4b32-ab06-7fec01a5a5b1.jpg?1562406455',image_small:'https://cards.scryfall.io/small/front/6/0/60fa413b-5dd3-4b32-ab06-7fec01a5a5b1.jpg?1562406455',image_back:null,image_small_back:null,type_back:null,loyalty_back:null,set:'',set_name:''},
+      {id:'basic_mountain',name:'Mountain',manaCost:'',cmc:0,type:'Basic Land - Mountain',colors:['R'],color_identity:['R'],rarity:'common',text:'',power:null,toughness:null,loyalty:null,keywords:[],image:'https://cards.scryfall.io/normal/front/c/2/c20b3a15-8b8a-4b59-8b07-5ec1b8a5dd83.jpg?1562412674',image_small:'https://cards.scryfall.io/small/front/c/2/c20b3a15-8b8a-4b59-8b07-5ec1b8a5dd83.jpg?1562412674',image_back:null,image_small_back:null,type_back:null,loyalty_back:null,set:'',set_name:''},
+      {id:'basic_forest',name:'Forest',manaCost:'',cmc:0,type:'Basic Land - Forest',colors:['G'],color_identity:['G'],rarity:'common',text:'',power:null,toughness:null,loyalty:null,keywords:[],image:'https://cards.scryfall.io/normal/front/d/7/d705d134-0731-4d0f-a930-7cc3095950b1.jpg?1562413587',image_small:'https://cards.scryfall.io/small/front/d/7/d705d134-0731-4d0f-a930-7cc3095950b1.jpg?1562413587',image_back:null,image_small_back:null,type_back:null,loyalty_back:null,set:'',set_name:''}
+    ];
+  }
+
+  _setCardsCache[code] = { cards: grouped, timestamp: Date.now() };
+  console.log(`Fetched ${allCards.length} cards for set ${code}: C${grouped.common.length} U${grouped.uncommon.length} R${grouped.rare.length} M${grouped.mythic.length} L${grouped.basic_land.length}`);
+  return grouped;
+}
+
+// Generate a single booster pack for a set (Play Booster style: 14 cards)
+function generateSetBooster(setCards) {
+  const pack = [];
+  const usedNames = new Set(); // Avoid duplicates within the same pack
+
+  function pickRandom(pool, count, avoidSet) {
+    const result = [];
+    const available = pool.filter(c => !avoidSet.has(c.name));
+    const shuffled = shuffle(available);
+    for (let i = 0; i < Math.min(count, shuffled.length); i++) {
+      result.push(shuffled[i]);
+      avoidSet.add(shuffled[i].name);
+    }
+    return result;
+  }
+
+  // 1. Common (7 cards, no basic lands)
+  const nonLandCommons = setCards.common.filter(c => !c.type || !c.type.includes('Basic Land'));
+  const commons = pickRandom(nonLandCommons, 7, usedNames);
+  pack.push(...commons);
+
+  // 2. Uncommon (3 cards)
+  const nonLandUncommons = setCards.uncommon.filter(c => !c.type || !c.type.includes('Basic Land'));
+  const uncommons = pickRandom(nonLandUncommons, 3, usedNames);
+  pack.push(...uncommons);
+
+  // 3. Rare/Mythic (1 card): 1/8 chance mythic, 7/8 rare
+  const isMythic = Math.random() < (1/8);
+  const rarePool = isMythic ? setCards.mythic : setCards.rare;
+  const rarePick = pickRandom(rarePool, 1, usedNames);
+  if (rarePick.length > 0) pack.push(rarePick[0]);
+  else {
+    // Fallback: if no mythic available, try rare; if no rare, try mythic
+    const fallback = isMythic ? setCards.rare : setCards.mythic;
+    const fb = pickRandom(fallback, 1, usedNames);
+    if (fb.length > 0) pack.push(fb[0]);
+  }
+
+  // 4. Wildcard slot 1: any rarity (NO basic lands)
+  const allNonLand = [...setCards.common, ...setCards.uncommon, ...setCards.rare, ...setCards.mythic]
+    .filter(c => !c.type || !c.type.includes('Basic Land'));
+  const wc1 = pickRandom(allNonLand, 1, usedNames);
+  if (wc1.length > 0) pack.push(wc1[0]);
+
+  // 5. Wildcard slot 2: common/uncommon only (NO basic lands)
+  const cUNonLand = [...nonLandCommons, ...nonLandUncommons];
+  const wc2 = pickRandom(cUNonLand, 1, usedNames);
+  if (wc2.length > 0) pack.push(wc2[0]);
+
+  // 6. Land slot: any land from the set (basic lands + non-rare non-basic lands)
+  const allLands = [...(setCards.basic_land || [])];
+  // Add non-basic lands from common/uncommon (dual lands, utility lands, etc.)
+  const nonBasicLands = [...setCards.common, ...setCards.uncommon]
+    .filter(c => c.type && c.type.includes('Land') && !c.type.includes('Basic Land'));
+  allLands.push(...nonBasicLands);
+  const landSlot = pickRandom(allLands, 1, usedNames);
+  if (landSlot.length > 0) pack.push(landSlot[0]);
+
+  // Assign unique IDs for draft tracking
+  for (let i = 0; i < pack.length; i++) {
+    pack[i] = { ...pack[i], id: `${pack[i].id}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}_${i}` };
+  }
+
+  return pack;
 }
 
 function authMiddleware(req, res, next) {
@@ -556,7 +973,7 @@ app.put('/api/me', authMiddleware, (req, res) => {
 // Cube Routes
 // ============================================================
 app.get('/api/cubes', authMiddleware, (req, res) => {
-  const cubes = db.prepare('SELECT id, name, description, cards, created_at FROM cubes WHERE user_id = ? ORDER BY created_at DESC').all(req.user.id);
+  const cubes = db.prepare('SELECT c.id, c.name, c.description, c.cards, c.created_at, c.user_id, u.username as creator_name FROM cubes c LEFT JOIN users u ON c.user_id = u.id ORDER BY c.created_at DESC').all();
   const result = cubes.map(c => ({
     ...c, card_count: JSON.parse(c.cards || '[]').length, cards: undefined
   }));
@@ -567,6 +984,8 @@ app.post('/api/cubes', authMiddleware, (req, res) => {
   try {
     const { name, description, cards } = req.body;
     if (!name) return res.status(400).json({ error: 'Cube名称不能为空' });
+    const existing = db.prepare('SELECT id FROM cubes WHERE name = ?').get(name);
+    if (existing) return res.status(400).json({ error: '已存在同名Cube，请使用其他名称' });
     const cardsJson = JSON.stringify(cards || []);
     const result = db.prepare('INSERT INTO cubes (user_id, name, description, cards) VALUES (?, ?, ?, ?)').run(
       req.user.id, name, description || '', cardsJson
@@ -580,7 +999,7 @@ app.post('/api/cubes', authMiddleware, (req, res) => {
 });
 
 app.get('/api/cubes/:id', authMiddleware, (req, res) => {
-  const cube = db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+  const cube = db.prepare('SELECT c.*, u.username as creator_name FROM cubes c LEFT JOIN users u ON c.user_id = u.id WHERE c.id = ?').get(req.params.id);
   if (!cube) return res.status(404).json({ error: 'Cube不存在' });
   cube.cards = JSON.parse(cube.cards);
   res.json(cube);
@@ -591,6 +1010,10 @@ app.put('/api/cubes/:id', authMiddleware, (req, res) => {
     const cube = db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
     if (!cube) return res.status(404).json({ error: 'Cube不存在' });
     const { name, description, cards } = req.body;
+    if (name && name !== cube.name) {
+      const dup = db.prepare('SELECT id FROM cubes WHERE name = ? AND id != ?').get(name, cube.id);
+      if (dup) return res.status(400).json({ error: '已存在同名Cube，请使用其他名称' });
+    }
     db.prepare('UPDATE cubes SET name = ?, description = ?, cards = ? WHERE id = ?').run(
       name || cube.name,
       description !== undefined ? description : cube.description,
@@ -618,6 +1041,8 @@ app.post('/api/cubes/import', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: '请提供纯文本格式的卡牌列表' });
     }
     const cubeName = name || 'Imported Cube';
+    const existing = db.prepare('SELECT id FROM cubes WHERE name = ?').get(cubeName);
+    if (existing) return res.status(400).json({ error: '已存在同名Cube，请使用其他名称' });
     const cubeDesc = description || '';
     const lines = data.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     if (lines.length === 0) return res.status(400).json({ error: '没有解析到任何卡牌名称' });
@@ -664,6 +1089,248 @@ app.post('/api/cubes/:id/add-cards', authMiddleware, async (req, res) => {
   }
 });
 
+app.post('/api/cubes/:id/add-cards-batch', authMiddleware, async (req, res) => {
+  try {
+    const { names } = req.body; // array of card name strings
+    if (!Array.isArray(names) || names.length === 0) return res.status(400).json({ error: '请提供卡牌名称列表' });
+    const cube = db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+    if (!cube) return res.status(404).json({ error: 'Cube不存在' });
+    const { cards: newCards, errors } = await fetchCardsFromText(names);
+    const existingCards = JSON.parse(cube.cards);
+    const allCards = [...existingCards, ...newCards];
+    db.prepare('UPDATE cubes SET cards = ? WHERE id = ?').run(JSON.stringify(allCards), cube.id);
+    res.json({
+      added: newCards.length,
+      fetched: newCards.filter(c => c.image).length,
+      failed: errors.length,
+      failed_names: errors.slice(0, 20),
+      total: allCards.length,
+      processed: names.length
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Remove a card from a cube by index
+app.post('/api/cubes/:id/remove-card', authMiddleware, (req, res) => {
+  try {
+    const { index } = req.body;
+    if (index === undefined || index === null) return res.status(400).json({ error: '请提供卡牌索引' });
+    const cube = db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+    if (!cube) return res.status(404).json({ error: 'Cube不存在' });
+    const cards = JSON.parse(cube.cards);
+    if (index < 0 || index >= cards.length) return res.status(400).json({ error: '无效的卡牌索引' });
+    const removed = cards.splice(index, 1)[0];
+    db.prepare('UPDATE cubes SET cards = ? WHERE id = ?').run(JSON.stringify(cards), cube.id);
+    res.json({ removed: removed.name, total: cards.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Retry failed cards in a cube (cards with no image/data)
+app.post('/api/cubes/:id/retry-failed', authMiddleware, async (req, res) => {
+  try {
+    const cube = db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+    if (!cube) return res.status(404).json({ error: 'Cube不存在' });
+    const cards = JSON.parse(cube.cards);
+    const failedIndices = [];
+    const failedNames = [];
+    cards.forEach((card, idx) => {
+      if (!card.image && !card.image_small && card.text === '未找到卡牌数据') {
+        failedIndices.push(idx);
+        if (!failedNames.includes(card.name)) failedNames.push(card.name);
+      }
+    });
+    if (failedNames.length === 0) return res.json({ retried: 0, success: 0, message: '没有需要重试的卡牌' });
+    const uniqueFailed = [...new Set(failedNames)];
+    const { cards: fetchedCards } = await fetchCardsFromText(uniqueFailed);
+    const fetchedMap = new Map();
+    for (const card of fetchedCards) {
+      if (card.image || card.image_small) fetchedMap.set(card.name, card);
+    }
+    let successCount = 0;
+    for (const idx of failedIndices) {
+      const replacement = fetchedMap.get(cards[idx].name);
+      if (replacement) {
+        cards[idx] = { ...replacement, id: cards[idx].id };
+        successCount++;
+      }
+    }
+    db.prepare('UPDATE cubes SET cards = ? WHERE id = ?').run(JSON.stringify(cards), cube.id);
+    res.json({
+      retried: failedIndices.length,
+      success: successCount,
+      still_failed: failedIndices.length - successCount,
+      total: cards.length
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Search cards on Scryfall
+app.get('/api/cards/search', authMiddleware, async (req, res) => {
+  try {
+    const q = (req.query.q || '').trim();
+    if (!q || q.length < 2) return res.status(400).json({ error: '搜索词至少2个字符' });
+    const url = `https://api.scryfall.com/cards/search?q=${encodeURIComponent(q)}&order=name`;
+    const response = await fetch(url, {
+      headers: { 'User-Agent': 'MTGLimitedSite/2.0', 'Accept': 'application/json' }
+    });
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      return res.status(response.status).json({ error: errData.details || `搜索失败: ${response.status}` });
+    }
+    const data = await response.json();
+    const cards = (data.data || []).slice(0, 20).map(c => ({
+      id: c.id, name: c.name, manaCost: getCardManaCost(c), cmc: c.cmc || 0,
+      type: c.type_line || '', colors: c.colors || [], color_identity: c.color_identity || [],
+      rarity: c.rarity || 'common', text: getCardText(c),
+      power: getCardPowerToughness(c).power, toughness: getCardPowerToughness(c).toughness,
+      loyalty: c.loyalty || null, keywords: c.keywords || [],
+      image: getCardImageUris(c) ? getCardImageUris(c).normal : null,
+      image_small: getCardImageUris(c) ? getCardImageUris(c).small : null,
+      image_back: getCardBackImageUris(c) ? getCardBackImageUris(c).normal : null,
+      image_small_back: getCardBackImageUris(c) ? getCardBackImageUris(c).small : null,
+      type_back: getCardBackType(c) || null,
+      loyalty_back: getCardBackLoyalty(c) || null,
+      set: c.set || '', set_name: c.set_name || ''
+    }));
+    res.json({ cards, has_more: data.has_more, total: data.total_cards || cards.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Batch search cards by name (uses Scryfall /cards/collection for efficiency)
+app.post('/api/cards/batch-search', authMiddleware, async (req, res) => {
+  try {
+    const { names } = req.body;
+    if (!Array.isArray(names) || names.length === 0) return res.status(400).json({ error: '请提供卡牌名称列表' });
+
+    // Deduplicate and normalize
+    const seen = new Set();
+    const uniqueNames = [];
+    for (const n of names) {
+      const norm = normalizeCardName(n.trim());
+      const key = norm.toLowerCase();
+      if (!seen.has(key) && norm.length > 0) { seen.add(key); uniqueNames.push(norm); }
+    }
+
+    const identifiers = uniqueNames.map(name => ({ name }));
+    const response = await fetch('https://api.scryfall.com/cards/collection', {
+      method: 'POST',
+      headers: { 'User-Agent': 'MTGLimitedSite/2.0', 'Accept': 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identifiers })
+    });
+
+    if (!response.ok) {
+      return res.status(502).json({ error: 'Scryfall API error: ' + response.status });
+    }
+
+    const data = await response.json();
+    const cards = (data.data || []).map(c => ({
+      id: c.id, name: c.name, manaCost: getCardManaCost(c), cmc: c.cmc || 0,
+      type: c.type_line || '', colors: c.colors || [], color_identity: c.color_identity || [],
+      rarity: c.rarity || 'common', text: getCardText(c),
+      power: getCardPowerToughness(c).power, toughness: getCardPowerToughness(c).toughness,
+      loyalty: c.loyalty || null, keywords: c.keywords || [],
+      image: getCardImageUris(c) ? getCardImageUris(c).normal : null,
+      image_small: getCardImageUris(c) ? getCardImageUris(c).small : null,
+      image_back: getCardBackImageUris(c) ? getCardBackImageUris(c).normal : null,
+      image_small_back: getCardBackImageUris(c) ? getCardBackImageUris(c).small : null,
+      type_back: getCardBackType(c) || null,
+      loyalty_back: getCardBackLoyalty(c) || null,
+      set: c.set || '', set_name: c.set_name || ''
+    }));
+
+    const foundNamesSet = new Set(cards.map(c => c.name.toLowerCase()));
+    // Also check DFC face names
+    for (const sfCard of (data.data || [])) {
+      if (sfCard.card_faces) {
+        for (const face of sfCard.card_faces) {
+          if (face.name) foundNamesSet.add(face.name.toLowerCase());
+        }
+      }
+    }
+
+    const failed = uniqueNames.filter(n => !foundNamesSet.has(n.toLowerCase()));
+
+    // Cache found cards
+    for (const sfCard of (data.data || [])) {
+      if (!sfCard.name) continue;
+      const card = cards.find(c => c.name === sfCard.name);
+      if (card) {
+        scryfallCache.set(sfCard.name.toLowerCase(), card);
+        if (sfCard.card_faces && sfCard.card_faces.length > 1) {
+          for (const face of sfCard.card_faces) {
+            if (face.name && face.name !== sfCard.name) {
+              scryfallCache.set(face.name.toLowerCase(), card);
+            }
+          }
+        }
+      }
+    }
+
+    res.json({ cards, failed, total: names.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// MTG Sets API
+app.get('/api/sets', authMiddleware, async (req, res) => {
+  try {
+    const sets = await fetchAllSets();
+    res.json({ sets });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/sets/:code/cards', authMiddleware, async (req, res) => {
+  try {
+    const code = req.params.code.toLowerCase();
+    const cards = await fetchSetCards(code);
+    res.json({
+      set_code: code,
+      common: cards.common.length,
+      uncommon: cards.uncommon.length,
+      rare: cards.rare.length,
+      mythic: cards.mythic.length,
+      basic_land: cards.basic_land.length,
+      total: cards.common.length + cards.uncommon.length + cards.rare.length + cards.mythic.length + cards.basic_land.length
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Add searched cards to cube
+app.post('/api/cubes/:id/add-searched', authMiddleware, async (req, res) => {
+  try {
+    const { cardNames } = req.body;
+    if (!Array.isArray(cardNames) || cardNames.length === 0) return res.status(400).json({ error: '请选择要添加的卡牌' });
+    const cube = db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+    if (!cube) return res.status(404).json({ error: 'Cube不存在' });
+    const { cards: newCards, errors } = await fetchCardsFromText(cardNames);
+    const existingCards = JSON.parse(cube.cards);
+    const allCards = [...existingCards, ...newCards];
+    db.prepare('UPDATE cubes SET cards = ? WHERE id = ?').run(JSON.stringify(allCards), cube.id);
+    res.json({
+      added: newCards.length,
+      fetched: newCards.filter(c => c.image || c.image_small).length,
+      failed: errors.length,
+      failed_names: errors.slice(0, 20),
+      total: allCards.length
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ============================================================
 // Event Routes
 // ============================================================
@@ -682,26 +1349,27 @@ app.get('/api/events', authMiddleware, (req, res) => {
 
 app.post('/api/events', authMiddleware, (req, res) => {
   try {
-    const { name, type, cube_id, settings } = req.body;
+    const { name, type, cube_id, set_code, set_name, settings } = req.body;
     if (!name || !type) return res.status(400).json({ error: '名称和类型不能为空' });
     if (!['draft', 'sealed'].includes(type)) return res.status(400).json({ error: '无效的事件类型' });
     if (cube_id) {
       const cube = db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(cube_id, req.user.id);
       if (!cube) return res.status(404).json({ error: 'Cube不存在' });
     }
+    if (!cube_id && !set_code) return res.status(400).json({ error: '请选择Cube或万智牌系列' });
     const defaultSettings = {
       max_players: type === 'draft' ? 8 : 24,
       packs_per_player: type === 'draft' ? 3 : 6,
       cards_per_pack: 15,
       cards_per_pick: type === 'draft' ? 1 : 1,
+      set_code: set_code || null,
+      set_name: set_name || null,
       ...settings
     };
-    const result = db.prepare('INSERT INTO events (user_id, name, type, cube_id, settings) VALUES (?, ?, ?, ?, ?)').run(
-      req.user.id, name, type, cube_id || null, JSON.stringify(defaultSettings)
+    const result = db.prepare('INSERT INTO events (user_id, name, type, cube_id, settings, set_code, set_name) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+      req.user.id, name, type, cube_id || null, JSON.stringify(defaultSettings), set_code || null, set_name || null
     );
     const eventId = result.lastInsertRowid;
-    // Auto-join creator as seat 1 so the event creator can immediately interact
-    // with their own draft / sealed event without needing a separate "join" step.
     db.prepare('INSERT INTO participants (event_id, user_id, seat_number) VALUES (?, ?, ?)').run(
       eventId, req.user.id, 1
     );
@@ -896,37 +1564,55 @@ function updateBotState(botState, pickedCard) {
 // ============================================================
 // Event Start + Pick (real Draft engine)
 // ============================================================
-app.post('/api/events/:id/start', authMiddleware, (req, res) => {
+app.post('/api/events/:id/start', authMiddleware, async (req, res) => {
   try {
     const event = db.prepare('SELECT * FROM events WHERE id = ?').get(req.params.id);
     if (!event) return res.status(404).json({ error: '事件不存在' });
     if (event.status !== 'waiting') return res.status(400).json({ error: '事件已经开始' });
-    const cube = event.cube_id ? db.prepare('SELECT * FROM cubes WHERE id = ?').get(event.cube_id) : null;
-    if (!cube) return res.status(400).json({ error: '没有关联的Cube' });
-    const cubeCards = JSON.parse(cube.cards);
-    if (cubeCards.length < 45) return res.status(400).json({ error: 'Cube至少需要45张牌' });
     const settings = JSON.parse(event.settings);
     const participants = db.prepare('SELECT * FROM participants WHERE event_id = ? ORDER BY seat_number').all(req.params.id);
     if (participants.length < 2) return res.status(400).json({ error: '至少需要2名参与者' });
 
+    const isSeriesMode = !!event.set_code;
+    let setCards = null;
+    let cubeCards = null;
+
+    if (isSeriesMode) {
+      // Series mode: fetch set cards for booster generation
+      setCards = await fetchSetCards(event.set_code);
+      const total = setCards.common.length + setCards.uncommon.length + setCards.rare.length + setCards.mythic.length;
+      if (total < 30) return res.status(400).json({ error: '该系列卡牌数量不足，无法开始' });
+    } else {
+      // Cube mode: use existing cube logic
+      const cube = event.cube_id ? db.prepare('SELECT * FROM cubes WHERE id = ?').get(event.cube_id) : null;
+      if (!cube) return res.status(400).json({ error: '没有关联的Cube' });
+      cubeCards = JSON.parse(cube.cards);
+      if (cubeCards.length < 45) return res.status(400).json({ error: 'Cube至少需要45张牌' });
+    }
+
     if (event.type === 'draft') {
-      // Build packs: each player gets `packs_per_player` packs of `cards_per_pack` cards.
-      // To avoid duplicates appearing too often, we shuffle and cycle through cube.
-      const shuffled = shuffle(cubeCards);
       const totalPacksNeeded = participants.length * settings.packs_per_player;
       const allPacks = [];
-      let idx = 0;
-      for (let p = 0; p < totalPacksNeeded; p++) {
-        const pack = [];
-        for (let c = 0; c < settings.cards_per_pack; c++) {
-          pack.push(shuffled[idx % shuffled.length]);
-          idx++;
+
+      if (isSeriesMode) {
+        // Series mode: generate booster packs
+        for (let p = 0; p < totalPacksNeeded; p++) {
+          allPacks.push(generateSetBooster(setCards));
         }
-        allPacks.push(pack);
+      } else {
+        // Cube mode: shuffle and deal from cube
+        const shuffled = shuffle(cubeCards);
+        let idx = 0;
+        for (let p = 0; p < totalPacksNeeded; p++) {
+          const pack = [];
+          for (let c = 0; c < settings.cards_per_pack; c++) {
+            pack.push(shuffled[idx % shuffled.length]);
+            idx++;
+          }
+          allPacks.push(pack);
+        }
       }
 
-      // Each player gets `packs_per_player` packs from the allPacks list, in order.
-      // Their queue contains packs 2..N; current = pack 1.
       const updateStmt = db.prepare('UPDATE participants SET current_packs = ?, pool = ?, picks = ?, bot_state = ?, status = ? WHERE id = ?');
       for (let i = 0; i < participants.length; i++) {
         const playerPacks = [];
@@ -952,16 +1638,26 @@ app.post('/api/events/:id/start', authMiddleware, (req, res) => {
       }
       db.prepare('UPDATE events SET status = ?, current_round = 1 WHERE id = ?').run('in_progress', req.params.id);
     } else if (event.type === 'sealed') {
-      const poolSize = settings.packs_per_player * settings.cards_per_pack;
       const updateStmt = db.prepare('UPDATE participants SET pool = ?, status = ? WHERE id = ?');
       for (const participant of participants) {
-        const pool = shuffle(cubeCards).slice(0, poolSize);
+        let pool = [];
+        if (isSeriesMode) {
+          // Series sealed: generate packs_per_player booster packs
+          for (let p = 0; p < settings.packs_per_player; p++) {
+            pool.push(...generateSetBooster(setCards));
+          }
+        } else {
+          // Cube sealed: random slice from cube
+          const poolSize = settings.packs_per_player * settings.cards_per_pack;
+          pool = shuffle(cubeCards).slice(0, poolSize);
+        }
         updateStmt.run(JSON.stringify(pool), 'building', participant.id);
       }
       db.prepare('UPDATE events SET status = ?, current_round = 1, picks_this_round = ? WHERE id = ?').run('in_progress', '[]', req.params.id);
     }
 
-    res.json({ success: true, message: `${event.type === 'draft' ? '轮抓' : '现开'}已开始！` });
+    const modeLabel = isSeriesMode ? (event.set_name || event.set_code) : 'Cube';
+    res.json({ success: true, message: `${event.type === 'draft' ? '轮抓' : '现开'}已开始！(${modeLabel})` });
     wsBroadcast(`event:${req.params.id}`, 'event_updated', { eventId: parseInt(req.params.id) });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1182,7 +1878,8 @@ app.get('/api/decks', authMiddleware, (req, res) => {
     WHERE d.user_id = ? ORDER BY d.created_at DESC
   `).all(req.user.id);
   const result = decks.map(d => ({
-    ...d, main_deck: JSON.parse(d.main_deck || '[]'), sideboard: JSON.parse(d.sideboard || '[]')
+    ...d, main_deck: JSON.parse(d.main_deck || '[]'), sideboard: JSON.parse(d.sideboard || '[]'),
+    outside_game: JSON.parse(d.outside_game || '[]')
   }));
   res.json(result);
 });
@@ -1195,19 +1892,21 @@ app.get('/api/events/:id/my-deck', authMiddleware, (req, res) => {
   if (!deck) return res.json(null);
   deck.main_deck = JSON.parse(deck.main_deck || '[]');
   deck.sideboard = JSON.parse(deck.sideboard || '[]');
+  deck.outside_game = JSON.parse(deck.outside_game || '[]');
   res.json(deck);
 });
 
 app.post('/api/decks', authMiddleware, (req, res) => {
   try {
-    const { name, main_deck, sideboard, event_id } = req.body;
+    const { name, main_deck, sideboard, outside_game, event_id } = req.body;
     if (!name) return res.status(400).json({ error: '牌组名称不能为空' });
-    const result = db.prepare('INSERT INTO decks (user_id, name, main_deck, sideboard, event_id) VALUES (?, ?, ?, ?, ?)').run(
-      req.user.id, name, JSON.stringify(main_deck || []), JSON.stringify(sideboard || []), event_id || null
+    const result = db.prepare('INSERT INTO decks (user_id, name, main_deck, sideboard, outside_game, event_id) VALUES (?, ?, ?, ?, ?, ?)').run(
+      req.user.id, name, JSON.stringify(main_deck || []), JSON.stringify(sideboard || []), JSON.stringify(outside_game || []), event_id || null
     );
     const deck = db.prepare('SELECT * FROM decks WHERE id = ?').get(result.lastInsertRowid);
     deck.main_deck = JSON.parse(deck.main_deck);
     deck.sideboard = JSON.parse(deck.sideboard);
+    deck.outside_game = JSON.parse(deck.outside_game || '[]');
     res.json(deck);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1219,6 +1918,7 @@ app.get('/api/decks/:id', authMiddleware, (req, res) => {
   if (!deck) return res.status(404).json({ error: '牌组不存在' });
   deck.main_deck = JSON.parse(deck.main_deck);
   deck.sideboard = JSON.parse(deck.sideboard);
+  deck.outside_game = JSON.parse(deck.outside_game || '[]');
   res.json(deck);
 });
 
@@ -1226,16 +1926,18 @@ app.put('/api/decks/:id', authMiddleware, (req, res) => {
   try {
     const deck = db.prepare('SELECT * FROM decks WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
     if (!deck) return res.status(404).json({ error: '牌组不存在' });
-    const { name, main_deck, sideboard } = req.body;
-    db.prepare('UPDATE decks SET name = ?, main_deck = ?, sideboard = ? WHERE id = ?').run(
+    const { name, main_deck, sideboard, outside_game } = req.body;
+    db.prepare('UPDATE decks SET name = ?, main_deck = ?, sideboard = ?, outside_game = ? WHERE id = ?').run(
       name || deck.name,
       main_deck ? JSON.stringify(main_deck) : deck.main_deck,
       sideboard ? JSON.stringify(sideboard) : deck.sideboard,
+      outside_game ? JSON.stringify(outside_game) : (deck.outside_game || '[]'),
       deck.id
     );
     const updated = db.prepare('SELECT * FROM decks WHERE id = ?').get(deck.id);
     updated.main_deck = JSON.parse(updated.main_deck);
     updated.sideboard = JSON.parse(updated.sideboard);
+    updated.outside_game = JSON.parse(updated.outside_game || '[]');
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1292,7 +1994,7 @@ app.post('/api/events/:id/auto-pair', authMiddleware, (req, res) => {
     // Get all participants who have saved a deck
     const players = db.prepare(`
       SELECT DISTINCT d.user_id, d.id as deck_id, d.name as deck_name,
-             d.main_deck, d.sideboard, u.username
+             d.main_deck, d.sideboard, d.outside_game, u.username
       FROM decks d
       JOIN users u ON d.user_id = u.id
       WHERE d.event_id = ?
@@ -1321,8 +2023,8 @@ app.post('/api/events/:id/auto-pair', authMiddleware, (req, res) => {
     for (let i = 0; i < pairCount; i++) {
       const p1 = shuffled[i * 2];
       const p2 = shuffled[i * 2 + 1];
-      const d1 = { name: p1.deck_name, main_deck: JSON.parse(p1.main_deck), sideboard: JSON.parse(p1.sideboard) };
-      const d2 = { name: p2.deck_name, main_deck: JSON.parse(p2.main_deck), sideboard: JSON.parse(p2.sideboard) };
+      const d1 = { name: p1.deck_name, main_deck: JSON.parse(p1.main_deck), sideboard: JSON.parse(p1.sideboard), outside_game: JSON.parse(p1.outside_game || '[]') };
+      const d2 = { name: p2.deck_name, main_deck: JSON.parse(p2.main_deck), sideboard: JSON.parse(p2.sideboard), outside_game: JSON.parse(p2.outside_game || '[]') };
       const name = `R1: ${p1.username} vs ${p2.username}`;
       const result = db.prepare(
         'INSERT INTO battles (name, player1_id, player1_deck, player2_id, player2_deck, event_id, status, round) VALUES (?,?,?,?,?,?,?,?)'
@@ -1368,7 +2070,7 @@ app.post('/api/events/:id/next-round', authMiddleware, (req, res) => {
     const winners = db.prepare(`
       SELECT b.winner_id, b.round,
              u.username,
-             d.id as deck_id, d.name as deck_name, d.main_deck, d.sideboard
+             d.id as deck_id, d.name as deck_name, d.main_deck, d.sideboard, d.outside_game
       FROM battles b
       JOIN users u ON b.winner_id = u.id
       JOIN decks d ON d.user_id = b.winner_id AND d.event_id = ?
@@ -1388,7 +2090,7 @@ app.post('/api/events/:id/next-round', authMiddleware, (req, res) => {
 
     // Check for bye player who hasn't fought yet (round > 1, they got a bye in round 1)
     const byePlayer = db.prepare(`
-      SELECT p.user_id, u.username, d.id as deck_id, d.name as deck_name, d.main_deck, d.sideboard
+      SELECT p.user_id, u.username, d.id as deck_id, d.name as deck_name, d.main_deck, d.sideboard, d.outside_game
       FROM participants p
       JOIN users u ON p.user_id = u.id
       JOIN decks d ON d.user_id = p.user_id AND d.event_id = ?
@@ -1406,7 +2108,8 @@ app.post('/api/events/:id/next-round', authMiddleware, (req, res) => {
         deck_id: byePlayer.deck_id,
         deck_name: byePlayer.deck_name,
         main_deck: byePlayer.main_deck,
-        sideboard: byePlayer.sideboard
+        sideboard: byePlayer.sideboard,
+        outside_game: byePlayer.outside_game || '[]'
       });
     }
 
@@ -1431,8 +2134,8 @@ app.post('/api/events/:id/next-round', authMiddleware, (req, res) => {
     for (let i = 0; i < pairCount; i++) {
       const p1 = shuffled[i * 2];
       const p2 = shuffled[i * 2 + 1];
-      const d1 = { name: p1.deck_name, main_deck: JSON.parse(p1.main_deck), sideboard: JSON.parse(p1.sideboard) };
-      const d2 = { name: p2.deck_name, main_deck: JSON.parse(p2.main_deck), sideboard: JSON.parse(p2.sideboard) };
+      const d1 = { name: p1.deck_name, main_deck: JSON.parse(p1.main_deck), sideboard: JSON.parse(p1.sideboard), outside_game: JSON.parse(p1.outside_game || '[]') };
+      const d2 = { name: p2.deck_name, main_deck: JSON.parse(p2.main_deck), sideboard: JSON.parse(p2.sideboard), outside_game: JSON.parse(p2.outside_game || '[]') };
       const name = `R${nextRound}: ${p1.username} vs ${p2.username}`;
       const result = db.prepare(
         'INSERT INTO battles (name, player1_id, player1_deck, player2_id, player2_deck, event_id, status, round) VALUES (?,?,?,?,?,?,?,?)'
@@ -1464,7 +2167,8 @@ app.post('/api/battles', authMiddleware, (req, res) => {
     const deck = db.prepare('SELECT * FROM decks WHERE id = ? AND user_id = ?').get(deck_id, req.user.id);
     if (!deck) return res.status(404).json({ error: '牌组不存在' });
     const deckData = {
-      name: deck.name, main_deck: JSON.parse(deck.main_deck), sideboard: JSON.parse(deck.sideboard)
+      name: deck.name, main_deck: JSON.parse(deck.main_deck), sideboard: JSON.parse(deck.sideboard),
+      outside_game: JSON.parse(deck.outside_game || '[]')
     };
     const result = db.prepare('INSERT INTO battles (name, player1_id, player1_deck, event_id) VALUES (?, ?, ?, ?)').run(
       name || `${req.user.username}的对战`, req.user.id, JSON.stringify(deckData), event_id || null
@@ -1506,7 +2210,8 @@ app.post('/api/battles/:id/join', authMiddleware, (req, res) => {
     const deck = db.prepare('SELECT * FROM decks WHERE id = ? AND user_id = ?').get(deck_id, req.user.id);
     if (!deck) return res.status(404).json({ error: '牌组不存在' });
     const deckData = {
-      name: deck.name, main_deck: JSON.parse(deck.main_deck), sideboard: JSON.parse(deck.sideboard)
+      name: deck.name, main_deck: JSON.parse(deck.main_deck), sideboard: JSON.parse(deck.sideboard),
+      outside_game: JSON.parse(deck.outside_game || '[]')
     };
     db.prepare('UPDATE battles SET player2_id = ?, player2_deck = ? WHERE id = ?').run(
       req.user.id, JSON.stringify(deckData), battle.id
@@ -1588,7 +2293,8 @@ app.post('/api/battles/:id/next-game', authMiddleware, (req, res) => {
         const deckObj = {
           name: updated_deck.name || '',
           main_deck: updated_deck.main_deck || [],
-          sideboard: updated_deck.sideboard || []
+          sideboard: updated_deck.sideboard || [],
+          outside_game: updated_deck.outside_game || []
         };
         const col = isP1 ? 'player1_deck' : 'player2_deck';
         db.prepare(`UPDATE battles SET ${col} = ? WHERE id = ?`).run(JSON.stringify(deckObj), battle.id);
@@ -1749,8 +2455,10 @@ function resolveDeck(deckList) {
     const name = typeof nameOrObj === 'string' ? nameOrObj : (nameOrObj.name || String(nameOrObj));
     const base = lookupLocalCard(name);
     const instanceId = 'card_' + (++cardInstanceCounter) + '_' + Date.now().toString(36);
+    // Merge original deck card data (may include image_back for DFC) with lookup result
+    const originalData = (typeof nameOrObj === 'object' && nameOrObj.image_back) ? nameOrObj : {};
     if (base) {
-      return { ...base, id: instanceId, instanceId, cardName: base.name };
+      return { ...base, ...originalData, id: instanceId, instanceId, cardName: base.name };
     }
     // Fallback for cards not in cache (basic lands, etc.)
     const isBasicLand = ['Forest', 'Plains', 'Mountain', 'Swamp', 'Island',
@@ -1764,7 +2472,8 @@ function resolveDeck(deckList) {
       colors: [], color_identity: [], rarity: 'common',
       text: '', power: null, toughness: null, loyalty: null,
       keywords: [], image: null, image_small: null, image_large: null,
-      set: '', set_name: '', scryfall_id: null
+      set: '', set_name: '', scryfall_id: null,
+      ...originalData
     };
   });
 }
@@ -1772,8 +2481,12 @@ function resolveDeck(deckList) {
 function initializeGameState(battle) {
   const p1DeckList = Array.isArray(battle.player1_deck.main_deck) ? battle.player1_deck.main_deck : [];
   const p2DeckList = Array.isArray(battle.player2_deck.main_deck) ? battle.player2_deck.main_deck : [];
+  const p1OutsideList = Array.isArray(battle.player1_deck.outside_game) ? battle.player1_deck.outside_game : [];
+  const p2OutsideList = Array.isArray(battle.player2_deck.outside_game) ? battle.player2_deck.outside_game : [];
   const p1Deck = shuffleArray(resolveDeck(p1DeckList));
   const p2Deck = shuffleArray(resolveDeck(p2DeckList));
+  const p1Outside = resolveDeck(p1OutsideList); // outside game cards are NOT shuffled, face-up
+  const p2Outside = resolveDeck(p2OutsideList);
   const p1Hand = p1Deck.splice(0, 7);
   const p2Hand = p2Deck.splice(0, 7);
   const firstPlayer = Math.random() < 0.5 ? 'p1' : 'p2';
@@ -1784,12 +2497,12 @@ function initializeGameState(battle) {
       p1: {
         userId: battle.player1_id, name: battle.player1_name,
         life: 20, library: p1Deck, hand: p1Hand,
-        battlefield: [], graveyard: [], exile: []
+        battlefield: [], graveyard: [], exile: [], outside_game: p1Outside
       },
       p2: {
         userId: battle.player2_id, name: battle.player2_name,
         life: 20, library: p2Deck, hand: p2Hand,
-        battlefield: [], graveyard: [], exile: []
+        battlefield: [], graveyard: [], exile: [], outside_game: p2Outside
       }
     },
     log: [
@@ -1807,6 +2520,19 @@ function findCardInZone(player, cardId, zone) {
   return player[zone].findIndex(c => c.id === cardId);
 }
 
+function findCardInBattlefield(player, cardId) {
+  // First check main battlefield
+  const idx = player.battlefield.findIndex(c => c.id === cardId);
+  if (idx !== -1) return { card: player.battlefield[idx], isStacked: false };
+  // Then check stacked cards
+  for (const host of player.battlefield) {
+    if (!Array.isArray(host.stacked_cards)) continue;
+    const stackedCard = host.stacked_cards.find(c => c.id === cardId);
+    if (stackedCard) return { card: stackedCard, isStacked: true };
+  }
+  return { card: null, isStacked: false };
+}
+
 function processGameAction(gs, userId, action) {
   let myKey, oppKey;
   if (gs.players.p1.userId === userId) { myKey = 'p1'; oppKey = 'p2'; }
@@ -1819,7 +2545,7 @@ function processGameAction(gs, userId, action) {
     case 'move_card': {
       const { card_id, from_zone, to_zone } = action;
       if (!card_id || !from_zone || !to_zone) return { error: '缺少移动参数' };
-      const validZones = ['hand', 'battlefield', 'graveyard', 'exile', 'library'];
+      const validZones = ['hand', 'battlefield', 'graveyard', 'exile', 'library', 'outside_game'];
       if (!validZones.includes(from_zone) || !validZones.includes(to_zone)) return { error: '无效的区域' };
       if (from_zone === to_zone) return { success: true };
       const srcArr = me[from_zone];
@@ -1833,7 +2559,12 @@ function processGameAction(gs, userId, action) {
         return { success: true };
       }
       if (to_zone === 'battlefield') { card.tapped = false; card.damage_marked = 0; card.counters = {}; }
-      me[to_zone].push(card);
+      // Library: put on top (unshift = index 0 = drawn first). Other zones: push to end.
+      if (to_zone === 'library') {
+        me[to_zone].unshift(card);
+      } else {
+        me[to_zone].push(card);
+      }
       gs.log.push(me.name + ' 将 ' + card.name + ' 从' + from_zone + '移至' + to_zone);
       return { success: true };
     }
@@ -1869,6 +2600,28 @@ function processGameAction(gs, userId, action) {
       gs.log.push('--- 第' + gs.turn + '回合: ' + next.name + ' ---');
       return { success: true };
     }
+    case 'mulligan': {
+      // Allow mulligan at any time (unlimited uses)
+      // Track mulligan count
+      if (!gs.mulligan_count) gs.mulligan_count = { p1: 0, p2: 0 };
+      gs.mulligan_count[myKey] = (gs.mulligan_count[myKey] || 0) + 1;
+      // Shuffle hand back into library
+      while (me.hand.length > 0) {
+        me.library.push(me.hand.shift());
+      }
+      // Shuffle library
+      for (let i = me.library.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [me.library[i], me.library[j]] = [me.library[j], me.library[i]];
+      }
+      // Draw 7 cards
+      const drawCount = Math.min(7, me.library.length);
+      for (let i = 0; i < drawCount; i++) {
+        me.hand.push(me.library.shift());
+      }
+      gs.log.push(me.name + ' 进行了第' + gs.mulligan_count[myKey] + '次调度（洗牌并重抽 ' + drawCount + ' 张）');
+      return { success: true };
+    }
     case 'adjust_life': {
       const { amount } = action;
       if (typeof amount !== 'number') return { error: '无效的数值' };
@@ -1877,9 +2630,146 @@ function processGameAction(gs, userId, action) {
       gs.log.push(target.name + ' 生命' + (amount >= 0 ? '+' : '') + amount + ' (' + target.life + ')');
       return { success: true };
     }
+    case 'play_from_deck': {
+      const { card_name, deck_zone, deck_idx, to_zone } = action;
+      if (!card_name || !deck_zone || deck_idx === undefined || !to_zone) return { error: '缺少参数' };
+      let resolvedCard;
+      if (deck_zone === 'library') {
+        // Find card in library by name
+        const lib = me.library || [];
+        const libIdx = lib.findIndex(c => c.name === card_name);
+        if (libIdx === -1) return { error: '牌库中未找到此牌: ' + card_name };
+        resolvedCard = lib.splice(libIdx, 1)[0];
+      } else {
+        const deckData = myKey === 'p1' ? battle.player1_deck : battle.player2_deck;
+        if (!deckData) return { error: '无法获取牌组' };
+        const deckArr = deck_zone === 'side' ? (deckData.sideboard || []) : (deckData.main_deck || []);
+        if (deck_idx < 0 || deck_idx >= deckArr.length) return { error: '无效的牌组索引' };
+        const deckCard = deckArr[deck_idx];
+        if (!deckCard) return { error: '牌组中无此牌' };
+        resolvedCard = resolveDeck([deckCard])[0];
+      }
+      if (!resolvedCard) return { error: '无法解析卡牌' };
+      if (to_zone === 'battlefield') { resolvedCard.tapped = false; resolvedCard.damage_marked = 0; resolvedCard.counters = {}; }
+      me[to_zone] = me[to_zone] || [];
+      me[to_zone].push(resolvedCard);
+      gs.log.push(me.name + ' 从牌库打出 ' + resolvedCard.name + ' 至' + to_zone);
+      // Also remove from revealed_cards if this card was being shown
+      if (gs.revealed_cards && gs.revealed_cards[myKey]) {
+        gs.revealed_cards[myKey] = gs.revealed_cards[myKey].filter(c => c.id !== resolvedCard.id);
+      }
+      return { success: true };
+    }
+    case 'stack_card': {
+      const { card_id, target_card_id } = action;
+      if (!card_id || !target_card_id) return { error: '缺少参数' };
+      if (card_id === target_card_id) return { error: '不能堆叠到自己上面' };
+      // Find source card in battlefield
+      const srcIdx = me.battlefield.findIndex(c => c.id === card_id);
+      if (srcIdx === -1) return { error: '战场上没有此牌' };
+      // Find target card in battlefield
+      const tgtIdx = me.battlefield.findIndex(c => c.id === target_card_id);
+      if (tgtIdx === -1) return { error: '战场上没有目标牌' };
+      const srcCard = me.battlefield.splice(srcIdx, 1)[0];
+      // Adjust target index after splice
+      const adjustedTgtIdx = srcIdx < tgtIdx ? tgtIdx - 1 : tgtIdx;
+      // Add to target's stack
+      if (!me.battlefield[adjustedTgtIdx]) return { error: '目标牌不存在' };
+      if (!Array.isArray(me.battlefield[adjustedTgtIdx].stacked_cards)) {
+        me.battlefield[adjustedTgtIdx].stacked_cards = [];
+      }
+      me.battlefield[adjustedTgtIdx].stacked_cards.push(srcCard);
+      gs.log.push(me.name + ' 将 ' + srcCard.name + ' 堆叠到 ' + me.battlefield[adjustedTgtIdx].name + ' 下面');
+      return { success: true };
+    }
+    case 'unstack_card': {
+      const { card_id, target_zone } = action;
+      if (!card_id) return { error: '缺少参数' };
+      // Find the card that has this card in its stack
+      let found = false;
+      for (let i = 0; i < me.battlefield.length; i++) {
+        const host = me.battlefield[i];
+        if (!Array.isArray(host.stacked_cards)) continue;
+        const stackIdx = host.stacked_cards.findIndex(c => c.id === card_id);
+        if (stackIdx !== -1) {
+          const unstackedCard = host.stacked_cards.splice(stackIdx, 1)[0];
+          // Move to target zone
+          if (target_zone === 'battlefield') {
+            unstackedCard.tapped = false; unstackedCard.damage_marked = 0; unstackedCard.counters = {};
+            me.battlefield.push(unstackedCard);
+          } else {
+            me[target_zone] = me[target_zone] || [];
+            me[target_zone].push(unstackedCard);
+          }
+          gs.log.push(me.name + ' 将 ' + unstackedCard.name + ' 从 ' + host.name + ' 下移出至' + target_zone);
+          found = true;
+          break;
+        }
+      }
+      if (!found) return { error: '未在堆叠中找到此牌' };
+      return { success: true };
+    }
+    case 'transfer_control': {
+      const { card_id, from_zone, to_zone } = action;
+      const srcZone = from_zone || 'battlefield';
+      const dstZone = to_zone || 'battlefield';
+      if (!card_id) return { error: '缺少卡牌ID' };
+      const validZones = ['hand', 'battlefield', 'graveyard', 'exile', 'library', 'outside_game'];
+      if (!validZones.includes(srcZone) || !validZones.includes(dstZone)) return { error: '无效的区域' };
+      const srcArr = me[srcZone];
+      if (!Array.isArray(srcArr)) return { error: '源区域无效' };
+      const idx = srcArr.findIndex(c => c.id === card_id);
+      if (idx === -1) return { error: '源区域中没有此牌' };
+      const card = srcArr.splice(idx, 1)[0];
+      // Reset battlefield state when entering opponent's battlefield
+      if (dstZone === 'battlefield') {
+        card.tapped = false;
+        card.damage_marked = 0;
+        card.counters = {};
+        // Remove any stacked cards (they stay with original controller)
+        if (Array.isArray(card.stacked_cards) && card.stacked_cards.length > 0) {
+          // Move stacked cards back to my battlefield
+          for (const sc of card.stacked_cards) {
+            me.battlefield.push(sc);
+          }
+          gs.log.push(card.stacked_cards.length + ' 张堆叠牌返回 ' + me.name + ' 的战场');
+          card.stacked_cards = [];
+        }
+      }
+      if (dstZone === 'library') {
+        opp[dstZone].unshift(card);
+      } else {
+        opp[dstZone].push(card);
+      }
+      gs.log.push(me.name + ' 将 ' + card.name + ' 的控制权转移给 ' + opp.name);
+      return { success: true };
+    }
     case 'concede': {
       gs.winner = oppKey;
       gs.log.push(me.name + ' 认输');
+      return { success: true };
+    }
+    case 'return_to_library': {
+      const { card_ids, position } = action; // position: 'top' or 'bottom'
+      if (!Array.isArray(card_ids) || !position) return { error: '缺少参数' };
+      const lib = me.library || [];
+      // Collect displayed cards by their IDs
+      const displayedCards = [];
+      card_ids.forEach(id => {
+        const idx = lib.findIndex(c => c.id === id);
+        if (idx !== -1) displayedCards.push(lib.splice(idx, 1)[0]);
+      });
+      // Now lib has only non-displayed cards, displayedCards are in the order from card_ids
+      if (position === 'top') {
+        me.library = displayedCards.concat(lib);
+      } else {
+        me.library = lib.concat(displayedCards);
+      }
+      gs.log.push(me.name + ' 将 ' + displayedCards.length + ' 张牌放回牌库' + (position === 'top' ? '顶' : '底'));
+      // Clear revealed_cards since the preview is closed
+      if (gs.revealed_cards && gs.revealed_cards[myKey]) {
+        delete gs.revealed_cards[myKey];
+      }
       return { success: true };
     }
     case 'shuffle_library': {
@@ -1891,12 +2781,29 @@ function processGameAction(gs, userId, action) {
       gs.log.push(me.name + ' 洗牌 (' + me.library.length + ' 张)');
       return { success: true };
     }
+    case 'show_library_cards': {
+      const { count } = action;
+      if (!me.library || me.library.length === 0) return { error: '牌库为空' };
+      const n = Math.min(parseInt(count) || 0, me.library.length);
+      if (n < 1) return { error: '无效数量' };
+      // Store revealed cards in game state using player key (p1/p2) so opponent can see them
+      if (!gs.revealed_cards) gs.revealed_cards = {};
+      gs.revealed_cards[myKey] = me.library.slice(0, n);
+      gs.log.push(me.name + ' 展示了牌库顶 ' + n + ' 张牌');
+      return { success: true, revealed: gs.revealed_cards[myKey] };
+    }
+    case 'hide_library_cards': {
+      if (!gs.revealed_cards) gs.revealed_cards = {};
+      delete gs.revealed_cards[myKey];
+      gs.log.push(me.name + ' 结束了卡牌展示');
+      return { success: true };
+    }
     case 'add_counter': {
       const { card_id, counter_type } = action;
       if (!card_id || !counter_type) return { error: '缺少指示物参数' };
-      const idx = findCardInZone(me, card_id, 'battlefield');
-      if (idx === -1) return { error: '战场上没有此牌' };
-      const card = me.battlefield[idx];
+      const found = findCardInBattlefield(me, card_id);
+      if (!found.card) return { error: '战场上没有此牌' };
+      const card = found.card;
       if (!card.counters) card.counters = {};
 
       // +1/+1 and -1/-1 cancel each other
@@ -1928,9 +2835,9 @@ function processGameAction(gs, userId, action) {
     case 'remove_counter': {
       const { card_id, counter_type } = action;
       if (!card_id || !counter_type) return { error: '缺少指示物参数' };
-      const idx = findCardInZone(me, card_id, 'battlefield');
-      if (idx === -1) return { error: '战场上没有此牌' };
-      const card = me.battlefield[idx];
+      const found = findCardInBattlefield(me, card_id);
+      if (!found.card) return { error: '战场上没有此牌' };
+      const card = found.card;
       if (!card.counters || !card.counters[counter_type] || card.counters[counter_type] <= 0) {
         return { error: '此牌上没有该指示物' };
       }
@@ -1942,9 +2849,9 @@ function processGameAction(gs, userId, action) {
     case 'adjust_loyalty': {
       const { card_id, amount } = action;
       if (!card_id || typeof amount !== 'number') return { error: '缺少忠诚参数' };
-      const idx = findCardInZone(me, card_id, 'battlefield');
-      if (idx === -1) return { error: '战场上没有此牌' };
-      const card = me.battlefield[idx];
+      const found = findCardInBattlefield(me, card_id);
+      if (!found.card) return { error: '战场上没有此牌' };
+      const card = found.card;
       const isPlaneswalker = (card.type || '').toLowerCase().includes('planeswalker');
       if (!isPlaneswalker) return { error: '此牌不是鹏洛客' };
       if (card.loyalty == null) card.loyalty = 0;
@@ -1953,8 +2860,17 @@ function processGameAction(gs, userId, action) {
       gs.log.push(me.name + ' ' + card.name + ' 忠诚' + (amount >= 0 ? '+' : '') + amount + ' (' + card.loyalty + ')');
       if (card.loyalty <= 0) {
         // Planeswalker dies
-        me.battlefield.splice(idx, 1);
-        card.loyalty = 0;
+        if (found.isStacked) {
+          // Remove from host's stacked_cards
+          for (const host of me.battlefield) {
+            if (!Array.isArray(host.stacked_cards)) continue;
+            const si = host.stacked_cards.findIndex(c => c.id === card_id);
+            if (si !== -1) { host.stacked_cards.splice(si, 1); break; }
+          }
+        } else {
+          const idx = me.battlefield.findIndex(c => c.id === card_id);
+          if (idx !== -1) me.battlefield.splice(idx, 1);
+        }
         card.tapped = false;
         card.damage_marked = 0;
         card.counters = {};
@@ -2028,9 +2944,9 @@ function processGameAction(gs, userId, action) {
     case 'toggle_token_type': {
       const { card_id } = action;
       if (!card_id) return { error: '缺少衍生物参数' };
-      const idx = findCardInZone(me, card_id, 'battlefield');
-      if (idx === -1) return { error: '战场上没有此牌' };
-      const card = me.battlefield[idx];
+      const found = findCardInBattlefield(me, card_id);
+      if (!found.card) return { error: '战场上没有此牌' };
+      const card = found.card;
       if (!card.is_token) return { error: '只有衍生物可以切换类型' };
       card.is_creature = !card.is_creature;
       if (card.is_creature) {
@@ -2069,12 +2985,21 @@ app.post('/api/battles/:id/action', authMiddleware, (req, res) => {
     if (result.error) return res.status(400).json(result);
 
     if (gs.winner) {
-      // BO3: increment game wins, check if match is over
+      // Determine format from event settings (BO1 or BO3)
+      let matchFormat = 'bo3'; // default
+      if (battle.event_id) {
+        const evt = db.prepare('SELECT settings FROM events WHERE id = ?').get(battle.event_id);
+        if (evt) {
+          const evtSettings = JSON.parse(evt.settings || '{}');
+          matchFormat = evtSettings.format || 'bo3';
+        }
+      }
+      const winsNeeded = matchFormat === 'bo1' ? 1 : 2;
       const p1w = (battle.player1_wins || 0) + (gs.winner === 'p1' ? 1 : 0);
       const p2w = (battle.player2_wins || 0) + (gs.winner === 'p2' ? 1 : 0);
-      if (p1w >= 2 || p2w >= 2) {
+      if (p1w >= winsNeeded || p2w >= winsNeeded) {
         // Match over
-        const matchWinnerId = p1w >= 2 ? battle.player1_id : battle.player2_id;
+        const matchWinnerId = p1w >= winsNeeded ? battle.player1_id : battle.player2_id;
         db.prepare('UPDATE battles SET winner_id = ?, status = ?, player1_wins = ?, player2_wins = ? WHERE id = ?').run(
           matchWinnerId, 'completed', p1w, p2w, battle.id
         );

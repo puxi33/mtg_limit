@@ -778,7 +778,22 @@
         WS.subscribe('battle:' + battleId);
         WS.on('battle_updated', handleBattleUpdate);
       } catch (err) {
-        document.getElementById('battle-loading').innerHTML = `<div class="battle-error"><div>${err.message}</div><button onclick="window.close()">关闭</button></div>`;
+        console.error('initBattle error:', err);
+        var loadingEl = document.getElementById('battle-loading');
+        if (loadingEl) {
+          loadingEl.innerHTML = '<div class="battle-error"><div>' + escapeHtml(err.message) + '</div><button onclick="window.close()">关闭</button></div>';
+        } else {
+          // battle-loading was removed (renderBattlePage/renderWaitingScreen already ran)
+          // Show error as a toast overlay
+          var root = document.getElementById('battle-root');
+          if (root) {
+            var errDiv = document.createElement('div');
+            errDiv.className = 'battle-error';
+            errDiv.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:9999';
+            errDiv.innerHTML = '<div style="color:#ff6b6b">' + escapeHtml(err.message) + '</div><button onclick="window.close()" style="margin-top:8px">关闭</button>';
+            root.appendChild(errDiv);
+          }
+        }
       }
     }
 
@@ -871,6 +886,23 @@
       window.close();
       // Fallback: if window.close() doesn't work (not opened by script)
       setTimeout(() => { window.location.href = '/'; }, 500);
+    }
+    async function mtgaReturnToEvent(battleId) {
+      try {
+        var battle = await api('/api/battles/' + battleId);
+        var eventId = battle.event_id;
+        if (WS) {
+          WS.unsubscribe('battle:' + battleId);
+          WS.disconnect();
+        }
+        if (eventId) {
+          window.location.href = '/events/' + eventId;
+        } else {
+          mtgaLeaveBattle(battleId);
+        }
+      } catch(err) {
+        mtgaLeaveBattle(battleId);
+      }
     }
   </script>
 </body>
