@@ -13,6 +13,7 @@ const fs = require('fs');
 const http = require('http');
 const url = require('url');
 const { WebSocketServer } = require('ws');
+const { song_url, song_detail, search } = require('NeteaseCloudMusicApi');
 
 const app = express();
 const JWT_SECRET = process.env.JWT_SECRET || 'mtg-limited-secret-key-dev-2024';
@@ -615,7 +616,8 @@ async function fetchSetCards(setCode) {
   }
 
   const allCards = [];
-  let url = `https://api.scryfall.com/cards/search?q=set:${code}&order=set&unique=prints`;
+  // Use game:paper to exclude digital-only (Alchemy) cards
+  let url = `https://api.scryfall.com/cards/search?q=set:${code}+game:paper&order=set&unique=prints`;
   let page = 0;
 
   while (url && page < 20) { // Max 20 pages to avoid infinite loops
@@ -629,6 +631,9 @@ async function fetchSetCards(setCode) {
         // Skip tokens, emblems, and double-sided weirdness
         if (c.layout === 'token' || c.layout === 'double_faced_token') continue;
         if (c.type_line && c.type_line.includes('Token')) continue;
+        // Skip digital/Alchemy cards
+        if (c.digital) continue;
+        if (c.name && c.name.startsWith('A-')) continue;
 
         const card = {
           id: c.id, name: c.name,
@@ -702,8 +707,8 @@ function generateSetBooster(setCards) {
     return result;
   }
 
-  // 1. Common (7 cards, no basic lands)
-  const nonLandCommons = setCards.common.filter(c => !c.type || !c.type.includes('Basic Land'));
+  // 1. Common (7 cards, no lands at all — filter out basic lands AND fix lands / non-basic lands)
+  const nonLandCommons = setCards.common.filter(c => !c.type || !c.type.includes('Land'));
   const commons = pickRandom(nonLandCommons, 7, usedNames);
   pack.push(...commons);
 
@@ -730,7 +735,7 @@ function generateSetBooster(setCards) {
   const wc1 = pickRandom(allNonLand, 1, usedNames);
   if (wc1.length > 0) pack.push(wc1[0]);
 
-  // 5. Wildcard slot 2: common/uncommon only (NO basic lands)
+  // 5. Wildcard slot 2: common/uncommon only (NO lands at all — same non-land filter as commons)
   const cUNonLand = [...nonLandCommons, ...nonLandUncommons];
   const wc2 = pickRandom(cUNonLand, 1, usedNames);
   if (wc2.length > 0) pack.push(wc2[0]);
@@ -2510,6 +2515,7 @@ function initializeGameState(battle) {
       (firstPlayer === 'p1' ? battle.player1_name : battle.player2_name) + ' 先手',
       '--- 第1回合: ' + (firstPlayer === 'p1' ? battle.player1_name : battle.player2_name) + ' ---'
     ],
+    flipped_cards: { p1: [], p2: [] },
     winner: null,
     startedAt: Date.now()
   };
@@ -2533,6 +2539,15 @@ function findCardInBattlefield(player, cardId) {
   return { card: null, isStacked: false };
 }
 
+function detachStackedCardsToBattlefield(player, card, gs) {
+  if (!Array.isArray(card.stacked_cards) || card.stacked_cards.length === 0) return;
+  for (const sc of card.stacked_cards) {
+    player.battlefield.push(sc);
+    gs.log.push(sc.name + ' 从 ' + card.name + ' 下方返回战场');
+  }
+  card.stacked_cards = [];
+}
+
 function processGameAction(gs, userId, action) {
   let myKey, oppKey;
   if (gs.players.p1.userId === userId) { myKey = 'p1'; oppKey = 'p2'; }
@@ -2550,9 +2565,29 @@ function processGameAction(gs, userId, action) {
       if (from_zone === to_zone) return { success: true };
       const srcArr = me[from_zone];
       if (!Array.isArray(srcArr)) return { error: '源区域无效' };
-      const idx = srcArr.findIndex(c => c.id === card_id);
-      if (idx === -1) return { error: '源区域中没有此牌' };
-      const card = srcArr.splice(idx, 1)[0];
+      // Search at top level first
+      let idx = srcArr.findIndex(c => c.id === card_id);
+      let card = null;
+      let wasStacked = false;
+      if (idx !== -1) {
+        card = srcArr.splice(idx, 1)[0];
+      } else if (from_zone === 'battlefield') {
+        // Also search inside stacked_cards on the battlefield
+        for (const host of me.battlefield) {
+          if (!Array.isArray(host.stacked_cards)) continue;
+          const si = host.stacked_cards.findIndex(c => c.id === card_id);
+          if (si !== -1) {
+            card = host.stacked_cards.splice(si, 1)[0];
+            wasStacked = true;
+            break;
+          }
+        }
+      }
+      if (!card) return { error: '源区域中没有此牌' };
+      // When a card leaves the battlefield, detach any stacked cards back to the battlefield
+      if (from_zone === 'battlefield') {
+        detachStackedCardsToBattlefield(me, card, gs);
+      }
       // Tokens cease to exist when they leave the battlefield (MTG rule)
       if (card.is_token && from_zone === 'battlefield') {
         gs.log.push(me.name + ' 的 ' + card.name + ' 离开战场，消失');
@@ -2582,6 +2617,22 @@ function processGameAction(gs, userId, action) {
       if (!me.battlefield[idx].tapped) return { error: '此牌未横置' };
       me.battlefield[idx].tapped = false;
       gs.log.push(me.name + ' 重置 ' + me.battlefield[idx].name);
+      return { success: true };
+    }
+    case 'flip_card': {
+      const idx = findCardInZone(me, action.card_id, 'battlefield');
+      if (idx === -1) return { error: '战场上没有此牌' };
+      if (!gs.flipped_cards) gs.flipped_cards = { p1: [], p2: [] };
+      if (!Array.isArray(gs.flipped_cards[myKey])) gs.flipped_cards[myKey] = [];
+      const fcArr = gs.flipped_cards[myKey];
+      const fIdx = fcArr.indexOf(action.card_id);
+      if (fIdx === -1) {
+        fcArr.push(action.card_id);
+        gs.log.push(me.name + ' 翻面 ' + me.battlefield[idx].name);
+      } else {
+        fcArr.splice(fIdx, 1);
+        gs.log.push(me.name + ' 翻回正面 ' + me.battlefield[idx].name);
+      }
       return { success: true };
     }
     case 'draw_card': {
@@ -2693,6 +2744,10 @@ function processGameAction(gs, userId, action) {
         const stackIdx = host.stacked_cards.findIndex(c => c.id === card_id);
         if (stackIdx !== -1) {
           const unstackedCard = host.stacked_cards.splice(stackIdx, 1)[0];
+          // If moving to non-battlefield zone, detach any nested stacked cards back to battlefield
+          if (target_zone !== 'battlefield') {
+            detachStackedCardsToBattlefield(me, unstackedCard, gs);
+          }
           // Move to target zone
           if (target_zone === 'battlefield') {
             unstackedCard.tapped = false; unstackedCard.damage_marked = 0; unstackedCard.counters = {};
@@ -2726,16 +2781,9 @@ function processGameAction(gs, userId, action) {
         card.tapped = false;
         card.damage_marked = 0;
         card.counters = {};
-        // Remove any stacked cards (they stay with original controller)
-        if (Array.isArray(card.stacked_cards) && card.stacked_cards.length > 0) {
-          // Move stacked cards back to my battlefield
-          for (const sc of card.stacked_cards) {
-            me.battlefield.push(sc);
-          }
-          gs.log.push(card.stacked_cards.length + ' 张堆叠牌返回 ' + me.name + ' 的战场');
-          card.stacked_cards = [];
-        }
       }
+      // Always detach stacked cards - they stay with original controller's battlefield
+      detachStackedCardsToBattlefield(me, card, gs);
       if (dstZone === 'library') {
         opp[dstZone].unshift(card);
       } else {
@@ -2852,14 +2900,20 @@ function processGameAction(gs, userId, action) {
       const found = findCardInBattlefield(me, card_id);
       if (!found.card) return { error: '战场上没有此牌' };
       const card = found.card;
-      const isPlaneswalker = (card.type || '').toLowerCase().includes('planeswalker');
+      const typeFront = (card.type || '').toLowerCase();
+      const typeBack = (card.type_back || '').toLowerCase();
+      const isPlaneswalker = typeFront.includes('planeswalker') || typeBack.includes('planeswalker');
       if (!isPlaneswalker) return { error: '此牌不是鹏洛客' };
-      if (card.loyalty == null) card.loyalty = 0;
-      card.loyalty = parseInt(card.loyalty) || 0;
-      card.loyalty += amount;
-      gs.log.push(me.name + ' ' + card.name + ' 忠诚' + (amount >= 0 ? '+' : '') + amount + ' (' + card.loyalty + ')');
-      if (card.loyalty <= 0) {
-        // Planeswalker dies
+      // For DFCs with planeswalker on back face, use loyalty_back; otherwise use loyalty
+      const useLoyaltyBack = typeBack.includes('planeswalker') && card.loyalty_back != null;
+      const loyaltyField = useLoyaltyBack ? 'loyalty_back' : 'loyalty';
+      if (card[loyaltyField] == null) card[loyaltyField] = 0;
+      card[loyaltyField] = parseInt(card[loyaltyField]) || 0;
+      card[loyaltyField] += amount;
+      gs.log.push(me.name + ' ' + card.name + ' 忠诚' + (amount >= 0 ? '+' : '') + amount + ' (' + card[loyaltyField] + ')');
+      if (card[loyaltyField] <= 0) {
+        // Planeswalker dies - first detach any stacked cards back to the battlefield
+        detachStackedCardsToBattlefield(me, card, gs);
         if (found.isStacked) {
           // Remove from host's stacked_cards
           for (const host of me.battlefield) {
@@ -3064,6 +3118,189 @@ app.post('/api/shutdown', (req, res) => {
     process.exit(0);
   }
 });
+
+// ============================================================
+// Song Quiz (/guessSong) - Playlist-based
+// ============================================================
+const PLAYLISTS_DIR = path.join(__dirname, 'data', 'playlists');
+fs.mkdirSync(PLAYLISTS_DIR, { recursive: true });
+
+function loadPlaylists() {
+  try {
+    const files = fs.readdirSync(PLAYLISTS_DIR).filter(f => f.endsWith('.json'));
+    return files.map(f => {
+      const data = JSON.parse(fs.readFileSync(path.join(PLAYLISTS_DIR, f)));
+      data.id = f.replace('.json', '');
+      return data;
+    });
+  } catch (err) {
+    console.error('loadPlaylists error:', err.message);
+    return [];
+  }
+}
+
+function loadPlaylist(id) {
+  try {
+    // Sanitize id to prevent directory traversal
+    const safe = id.replace(/[^a-zA-Z0-9_-]/g, '');
+    const p = path.join(PLAYLISTS_DIR, safe + '.json');
+    if (!fs.existsSync(p)) return null;
+    const data = JSON.parse(fs.readFileSync(p));
+    data.id = safe;
+    return data;
+  } catch { return null; }
+}
+
+function savePlaylist(data) {
+  const safe = data.id.replace(/[^a-zA-Z0-9_-]/g, '');
+  fs.writeFileSync(path.join(PLAYLISTS_DIR, safe + '.json'), JSON.stringify(data, null, 2));
+}
+
+// Token store: maps token -> song info (for reveal)
+const songTokens = new Map();
+
+// Serve playlist selection page
+app.get('/guessSong', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'guessSong.html'));
+});
+
+// Serve quiz page for a playlist
+app.get('/guessSong/play/:id', (req, res) => {
+  const pl = loadPlaylist(req.params.id);
+  if (!pl) return res.status(404).send('曲库不存在');
+  res.sendFile(path.join(__dirname, 'public', 'guessSong-play.html'));
+});
+
+// Serve management page
+app.get('/guessSong/manage', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'guessSong-manage.html'));
+});
+
+// API: List all playlists
+app.get('/api/guessSong/playlists', (req, res) => {
+  const playlists = loadPlaylists().map(pl => ({
+    id: pl.id, name: pl.name, description: pl.description || '',
+    songCount: (pl.songs || []).length, cover: pl.cover || '',
+  }));
+  res.json(playlists);
+});
+
+// API: Get playlist detail
+app.get('/api/guessSong/playlists/:id', (req, res) => {
+  const pl = loadPlaylist(req.params.id);
+  if (!pl) return res.status(404).json({ error: '曲库不存在' });
+  res.json({ id: pl.id, name: pl.name, description: pl.description || '', songCount: (pl.songs || []).length, songs: pl.songs || [] });
+});
+
+// API: Create playlist
+app.post('/api/guessSong/playlists', (req, res) => {
+  const { name, description, cover } = req.body;
+  if (!name) return res.status(400).json({ error: '曲库名称不能为空' });
+  const id = 'pl_' + Date.now();
+  const data = { id, name, description: description || '', cover: cover || '', songs: [] };
+  savePlaylist(data);
+  res.json({ id, name: data.name });
+});
+
+// API: Update playlist
+app.put('/api/guessSong/playlists/:id', (req, res) => {
+  const pl = loadPlaylist(req.params.id);
+  if (!pl) return res.status(404).json({ error: '曲库不存在' });
+  const { name, description, cover } = req.body;
+  if (name) pl.name = name;
+  if (description !== undefined) pl.description = description;
+  if (cover !== undefined) pl.cover = cover;
+  savePlaylist(pl);
+  res.json({ success: true });
+});
+
+// API: Delete playlist
+app.delete('/api/guessSong/playlists/:id', (req, res) => {
+  const safe = req.params.id.replace(/[^a-zA-Z0-9_-]/g, '');
+  const p = path.join(PLAYLISTS_DIR, safe + '.json');
+  if (!fs.existsSync(p)) return res.status(404).json({ error: '曲库不存在' });
+  fs.unlinkSync(p);
+  res.json({ success: true });
+});
+
+// API: Add songs to playlist
+app.post('/api/guessSong/playlists/:id/songs', (req, res) => {
+  const pl = loadPlaylist(req.params.id);
+  if (!pl) return res.status(404).json({ error: '曲库不存在' });
+  const { songs } = req.body;
+  if (!Array.isArray(songs)) return res.status(400).json({ error: 'songs must be array' });
+  const existingIds = new Set((pl.songs || []).map(s => s.id));
+  let added = 0;
+  for (const s of songs) {
+    if (!existingIds.has(s.id)) {
+      pl.songs.push({ id: s.id, name: s.name || '', anime: s.anime || '', artist: s.artist || '', year: s.year || null });
+      existingIds.add(s.id);
+      added++;
+    }
+  }
+  savePlaylist(pl);
+  res.json({ added, total: pl.songs.length });
+});
+
+// API: Remove song from playlist
+app.delete('/api/guessSong/playlists/:id/songs/:songId', (req, res) => {
+  const pl = loadPlaylist(req.params.id);
+  if (!pl) return res.status(404).json({ error: '曲库不存在' });
+  const songId = parseInt(req.params.songId);
+  pl.songs = (pl.songs || []).filter(s => s.id !== songId);
+  savePlaylist(pl);
+  res.json({ success: true, total: pl.songs.length });
+});
+
+// API: Search songs on NetEase (for management UI)
+app.get('/api/guessSong/search', async (req, res) => {
+  try {
+    const q = req.query.q;
+    if (!q) return res.json([]);
+    const result = await search({ keywords: q, limit: 20 });
+    const songs = (result.body && result.body.result && result.body.result.songs) || [];
+    res.json(songs.map(s => ({
+      id: s.id, name: s.name,
+      artist: s.artists.map(a => a.name).join(' / '),
+      album: s.album ? s.album.name : '',
+    })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Get random song from a playlist (returns audio URL + token, not song info)
+app.get('/api/guessSong/random', async (req, res) => {
+  try {
+    const pl = loadPlaylist(req.query.playlist);
+    if (!pl || !pl.songs || pl.songs.length === 0) return res.status(404).json({ error: '曲库为空或不存在' });
+    const song = pl.songs[Math.floor(Math.random() * pl.songs.length)];
+    const urlRes = await song_url({ id: song.id });
+    const audioUrl = urlRes.body.data && urlRes.body.data[0] ? urlRes.body.data[0].url : null;
+    if (!audioUrl) return res.status(500).json({ error: '无法获取音频链接，请重试' });
+    const token = 'tk_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    songTokens.set(token, song);
+    // Clean old tokens (keep last 50)
+    if (songTokens.size > 100) {
+      const keys = Array.from(songTokens.keys());
+      for (let i = 0; i < keys.length - 50; i++) songTokens.delete(keys[i]);
+    }
+    res.json({ audioUrl, token, duration: 30 });
+  } catch (err) {
+    console.error('guessSong random error:', err.message);
+    res.status(500).json({ error: '获取歌曲失败: ' + err.message });
+  }
+});
+
+// API: Reveal song info by token
+app.get('/api/guessSong/reveal', (req, res) => {
+  const song = songTokens.get(req.query.token || '');
+  if (!song) return res.status(400).json({ error: '无效 token' });
+  res.json({ name: song.name, anime: song.anime, artist: song.artist, year: song.year });
+});
+
+// Legacy redirect
+app.get('/guessAnime', (req, res) => res.redirect('/guessSong'));
 
 // ============================================================
 // SPA Fallback

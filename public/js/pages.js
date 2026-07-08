@@ -1028,6 +1028,16 @@ Pages.renderDeckBuilder = async function(el, params) {
       mainDeck = deck.main_deck || [];
       sideboard = deck.sideboard || [];
       pool = [...mainDeck, ...sideboard];
+      // If the deck is linked to an event, load the full event pool
+      if (deck.event_id) {
+        try {
+          const poolData = await API.get('/api/events/' + deck.event_id + '/pool');
+          pool = poolData.pool || pool;
+          eventId = deck.event_id;
+        } catch (poolErr) {
+          // If pool fetch fails, fall back to deck cards only
+        }
+      }
     }
     if (params.pool && eventId) {
       const poolData = await API.get('/api/events/' + eventId + '/pool');

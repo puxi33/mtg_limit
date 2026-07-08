@@ -212,10 +212,28 @@ function saveIntendedRoute(page, params) {
   } catch {}
 }
 
+// ========== MOBILE NAV TOGGLE ==========
+function toggleNavMenu() {
+  var links = document.querySelector('.nav-links');
+  var toggle = document.querySelector('.nav-toggle');
+  if (!links || !toggle) return;
+  var isOpen = links.classList.toggle('open');
+  toggle.classList.toggle('active', isOpen);
+}
+
+// Close mobile nav when navigating
+function closeNavMenu() {
+  var links = document.querySelector('.nav-links');
+  var toggle = document.querySelector('.nav-toggle');
+  if (links) links.classList.remove('open');
+  if (toggle) toggle.classList.remove('active');
+}
+
 // ========== NAVIGATION ==========
 function navigate(page, params = {}, opts = {}) {
   state.currentPage = page;
   state.pageData = params;
+  closeNavMenu(); // Close mobile nav on navigate
 
   // 同步 URL (history API)
   if (!opts.skipUrl) {
@@ -2715,6 +2733,12 @@ async function renderDeckBuilder(el, params) {
     const deckName = existingDeck ? existingDeck.name : '';
     const outsideGame = existingDeck ? (existingDeck.outside_game || []) : [];
 
+    // When editing an existing deck with event pool, remove cards already in mainDeck and outsideGame
+    if (existingDeck && params.eventId) {
+      var usedIds = new Set([...mainDeck.map(c => c.id), ...outsideGame.map(c => c.id)]);
+      pool = pool.filter(c => !usedIds.has(c.id));
+    }
+
     // Store state for click handlers (no sideboard in limited format)
     state.pageData._deckState = { pool: [...pool], mainDeck: [...mainDeck], outsideGame: [...outsideGame] };
 
@@ -3086,8 +3110,7 @@ let battleLocalUI = {
   gs: null,
   myKey: null,
   oppKey: null,
-  autoPass: false,
-  flippedCards: new Set()
+  autoPass: false
 };
 
 // WS handler for real-time updates
@@ -3185,7 +3208,7 @@ async function renderBattleDetail(el, id) {
   currentBattleId = id;
   WS.subscribe('battle:' + id);
   if (!battleLocalUI || battleLocalUI.battleId !== id) {
-    battleLocalUI = { battleId: id, selectedAttackers: new Set(), blockerAssignments: {}, lastPhaseKey: null, autoPass: false, flippedCards: new Set() };
+    battleLocalUI = { battleId: id, selectedAttackers: new Set(), blockerAssignments: {}, lastPhaseKey: null, autoPass: false };
   }
   try {
     const battle = await api(`/api/battles/${id}`);
@@ -3663,7 +3686,9 @@ function showContextMenu(e, cardId, card, playerKey, battleId) {
   // DFC flip option (only for double-faced cards)
   var isDFC = !!(card.image_back || card.image_small_back || card.image_large_back);
   if (isDFC) {
-    var isFlipped = battleLocalUI && battleLocalUI.flippedCards && battleLocalUI.flippedCards.has(cardId);
+    var gs = battleLocalUI && battleLocalUI.gs;
+    var flippedArr = (gs && gs.flipped_cards && Array.isArray(gs.flipped_cards[playerKey])) ? gs.flipped_cards[playerKey] : [];
+    var isFlipped = flippedArr.indexOf(cardId) !== -1;
     addItem(isFlipped ? '翻回正面' : '翻面', 'flip_card', null, null);
     addSeparator();
   }
@@ -4231,26 +4256,27 @@ function categorizeBattlefieldCards(cards, flippedSet) {
   var creatures = [];
   var lands = [];
   var others = [];
-  var flippedPlaneswalkers = [];
   cards.forEach(function(card) {
     var isCardFlipped = flippedSet && flippedSet.has(card.id);
     // For flipped cards, use the back face type
     var type = isCardFlipped ? ((card.type_back || card.type || '').toLowerCase()) : ((card.type || '').toLowerCase());
-    if (isCardFlipped && type.includes('planeswalker')) {
-      flippedPlaneswalkers.push(card);
-    } else if (type.includes('creature')) {
+    if (type.includes('creature')) {
       creatures.push(card);
     } else if (type.includes('land')) {
       lands.push(card);
     } else {
+      // Planeswalkers, artifacts, enchantments, etc. all go into "others"
       others.push(card);
     }
   });
-  return { creatures: creatures, lands: lands, others: others, flippedPlaneswalkers: flippedPlaneswalkers };
+  return { creatures: creatures, lands: lands, others: others };
 }
 
 function renderBattlefieldOrganized(cards, playerKey, isMy, flipped) {
-  var flippedSet = battleLocalUI && battleLocalUI.flippedCards ? battleLocalUI.flippedCards : null;
+  // Get flipped state from server (gs.flipped_cards[playerKey] is an array of card IDs)
+  var gs = battleLocalUI && battleLocalUI.gs;
+  var flippedArr = (gs && gs.flipped_cards && Array.isArray(gs.flipped_cards[playerKey])) ? gs.flipped_cards[playerKey] : [];
+  var flippedSet = { has: function(id) { return flippedArr.indexOf(id) !== -1; } };
   var groups = categorizeBattlefieldCards(cards, flippedSet);
 
   function renderCardWithStack(card, isCardFlipped, width, extraBadges) {
@@ -4275,7 +4301,7 @@ function renderBattlefieldOrganized(cards, playerKey, isMy, flipped) {
 
     var stackBadge = stackCount > 0 ? '<div class="stack-badge">' + stackCount + '</div>' : '';
 
-    return '<div class="mtg-card-container" style="position:relative;display:inline-block;width:' + (width + stackCount * stackOffset + 20) + 'px;height:' + (Math.round(width * 1.4) + stackCount * stackOffset + 10) + 'px;margin-left:' + (stackCount * stackOffset) + 'px">' +
+    return '<div class="mtg-card-container" style="position:relative;display:inline-block;width:' + (width + stackCount * stackOffset + 20) + 'px;height:' + (Math.round(width * 1.4) + stackCount * stackOffset + 10) + 'px;padding-left:' + (stackCount * stackOffset) + 'px">' +
       stackHtml +
       '<div class="mtg-card' + tapped + tokenCls + '" data-card-id="' + card.id + '" data-zone="battlefield" data-player="' + playerKey + '" data-color="' + getCardColorClass(card) + '" data-has-stack="' + (stackCount > 0 ? 'true' : 'false') + '" style="width:' + width + 'px;border:none;border-radius:4px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.4);position:relative;z-index:' + (stackCount + 1) + '" draggable="' + isMy + '">' +
         renderCardInnerHtml(card, isCardFlipped) + dmg + extraBadges + stackBadge +
@@ -4287,7 +4313,7 @@ function renderBattlefieldOrganized(cards, playerKey, isMy, flipped) {
     var h = '<div class="bf-row bf-creatures">';
     if (groups.creatures.length) {
       h += groups.creatures.map(function(card) {
-        var isCardFlipped = battleLocalUI && battleLocalUI.flippedCards && battleLocalUI.flippedCards.has(card.id);
+        var isCardFlipped = flippedSet.has(card.id);
         return renderCardWithStack(card, isCardFlipped, 110, renderCounterBadges(card) + renderLoyaltyBadge(card, isCardFlipped));
       }).join('');
     } else {
@@ -4302,7 +4328,7 @@ function renderBattlefieldOrganized(cards, playerKey, isMy, flipped) {
     h += '<div class="bf-row bf-lands">';
     if (groups.lands.length) {
       h += groups.lands.map(function(card) {
-        var isCardFlipped = battleLocalUI && battleLocalUI.flippedCards && battleLocalUI.flippedCards.has(card.id);
+        var isCardFlipped = flippedSet.has(card.id);
         return renderCardWithStack(card, isCardFlipped, 90, renderCounterBadges(card) + renderLoyaltyBadge(card, isCardFlipped));
       }).join('');
     } else {
@@ -4312,7 +4338,7 @@ function renderBattlefieldOrganized(cards, playerKey, isMy, flipped) {
     h += '<div class="bf-row bf-others">';
     if (groups.others.length) {
       h += groups.others.map(function(card) {
-        var isCardFlipped = battleLocalUI && battleLocalUI.flippedCards && battleLocalUI.flippedCards.has(card.id);
+        var isCardFlipped = flippedSet.has(card.id);
         return renderCardWithStack(card, isCardFlipped, 100, renderCounterBadges(card) + renderLoyaltyBadge(card, isCardFlipped));
       }).join('');
     } else {
@@ -4323,28 +4349,15 @@ function renderBattlefieldOrganized(cards, playerKey, isMy, flipped) {
     return h;
   }
 
-  // Flipped Planeswalkers section (bottom-right corner)
-  function flippedPlaneswalkersRow() {
-    if (!groups.flippedPlaneswalkers || groups.flippedPlaneswalkers.length === 0) return '';
-    var h = '<div class="bf-flipped-planeswalkers">';
-    h += groups.flippedPlaneswalkers.map(function(card) {
-      return renderCardWithStack(card, true, 100, renderCounterBadges(card) + renderLoyaltyBadge(card, true));
-    }).join('');
-    h += '</div>';
-    return h;
-  }
-
   var html = '<div class="bf-layout">';
   if (flipped) {
     // Opponent side: lands+others on top, creatures on bottom (mirror of my side)
     html += bottomRow();
     html += creaturesRow();
-    html += flippedPlaneswalkersRow();
   } else {
-    // My side: creatures on top, lands+others on bottom, flipped planeswalkers at bottom-right
+    // My side: creatures on top, lands+others on bottom
     html += creaturesRow();
     html += bottomRow();
-    html += flippedPlaneswalkersRow();
   }
   html += '</div>';
   return html;
@@ -4468,33 +4481,66 @@ function openZoneModal(zone, playerKey, battleId) {
 }
 
 // ============================================================
-// DFC Flip (Transform) on Battlefield
+// DFC Flip (Transform) on Battlefield — server-side tracking
 // ============================================================
 function toggleCardFlip(cardId) {
   if (!battleLocalUI) return;
-  if (!battleLocalUI.flippedCards) battleLocalUI.flippedCards = new Set();
-  if (battleLocalUI.flippedCards.has(cardId)) {
-    battleLocalUI.flippedCards.delete(cardId);
-  } else {
-    battleLocalUI.flippedCards.add(cardId);
-  }
-  // Find the card element and update its display
-  var cardEl = document.querySelector('.mtg-card[data-card-id="' + cardId + '"]');
-  if (!cardEl) return;
-  var playerKey = cardEl.getAttribute('data-player');
-  var gs = battleLocalUI.gs;
-  if (!gs || !gs.players || !gs.players[playerKey]) return;
-  var card = (gs.players[playerKey].battlefield || []).find(function(c) { return c.id == cardId; });
-  if (!card) return;
-  var isFlipped = battleLocalUI.flippedCards.has(cardId);
-  var dmg = card.damage_marked ? '<div class="mtga-card-damage">-' + card.damage_marked + '</div>' : '';
-  // Update card inner HTML
-  cardEl.innerHTML = renderCardInnerHtml(card, isFlipped) + dmg + renderCounterBadges(card) + renderLoyaltyBadge(card, isFlipped);
+  var battleId = battleLocalUI.battleId;
+  mtgaAction(battleId, { type: 'flip_card', card_id: cardId }).then(function(res) {
+    if (res && res.error) showToast('翻面失败: ' + res.error, 'error');
+  });
 }
 
 // ============================================================
 // Main Board Renderer
 // ============================================================
+// ============================================================
+// Post-render: dynamically calculate card overlap to fit rows
+// ============================================================
+function adjustBattlefieldSpacing(el) {
+  var board = el.querySelector('.mtga-board');
+  if (!board) return;
+  var zonesRows = board.querySelectorAll('.mtga-zones-row');
+  zonesRows.forEach(function(zonesRow) {
+    var bfZone = zonesRow.querySelector('.mtga-zone-battlefield');
+    if (!bfZone) return;
+    var containerWidth = bfZone.offsetWidth;
+    var rows = bfZone.querySelectorAll('.bf-row');
+    rows.forEach(function(row) {
+      var containers = row.querySelectorAll('.mtg-card-container');
+      if (containers.length <= 1) {
+        row.style.setProperty('--compact-ml', '0px');
+        return;
+      }
+      var isLandsRow = row.classList.contains('bf-lands');
+      var isOthersRow = row.classList.contains('bf-others');
+      var availWidth = (isLandsRow || isOthersRow) ? containerWidth * 0.5 : containerWidth;
+      var maxWidth = 0;
+      containers.forEach(function(c) {
+        var w = c.offsetWidth;
+        if (w > maxWidth) maxWidth = w;
+      });
+      var totalWidth = maxWidth * containers.length;
+      if (totalWidth > availWidth) {
+        var neededMargin = -Math.ceil((totalWidth - availWidth) / (containers.length - 1));
+        row.style.setProperty('--compact-ml', neededMargin + 'px');
+      } else {
+        row.style.setProperty('--compact-ml', '0px');
+      }
+    });
+  });
+}
+
+// Debounced resize handler for battlefield spacing
+var _bfResizeTimer = null;
+function onBattlefieldResize() {
+  if (_bfResizeTimer) clearTimeout(_bfResizeTimer);
+  _bfResizeTimer = setTimeout(function() {
+    var board = document.querySelector('.mtga-board');
+    if (board) adjustBattlefieldSpacing(board.parentElement);
+  }, 150);
+}
+
 function renderBattleBoard(el, battle, battleId, myKey, oppKey) {
   var gs = battle.game_state;
   var me = gs.players[myKey];
@@ -4639,6 +4685,8 @@ function renderBattleBoard(el, battle, battleId, myKey, oppKey) {
     el.appendChild(myRevealBadge);
   }
 
+  setTimeout(function() { adjustBattlefieldSpacing(el); }, 200);
+  setTimeout(function() { adjustBattlefieldSpacing(el); }, 800);
   setupBoardHandlers(el, battleId, myKey, oppKey, gs, me, opp, battle);
 }
 
@@ -4971,7 +5019,248 @@ function setupBoardHandlers(el, battleId, myKey, oppKey, gs, me, opp, battle) {
       showBattlefieldContextMenu(e, myKey, battleId);
     });
   }
+
+  // ============================================================
+  // MOBILE TOUCH INTERACTION SYSTEM
+  // ============================================================
+  var isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+  if (!isTouchDevice) return;
+
+  // State for touch-based card selection
+  window._touchSelectedCard = null; // { cardId, fromZone, playerKey, isStackCard, element }
+  window._touchLongPressTimer = null;
+  window._touchMoved = false;
+  window._touchStartPos = { x: 0, y: 0 };
+
+  function getZoneName(zone) {
+    var names = { battlefield: '战场', hand: '手牌', library: '牌库', graveyard: '坟场', exile: '放逐区', outside_game: '游戏外' };
+    return names[zone] || zone;
+  }
+
+  function showTouchSelectionBar(card, fromZone) {
+    var existing = document.getElementById('touch-selection-bar');
+    if (existing) existing.remove();
+    var bar = document.createElement('div');
+    bar.id = 'touch-selection-bar';
+    bar.innerHTML = '<span class="tsb-card">' + (card.name || '卡牌') + '</span>' +
+      '<span class="tsb-from">来源: ' + fromZone + '</span>' +
+      '<button class="tsb-cancel" onclick="clearTouchSelection()">取消</button>';
+    document.body.appendChild(bar);
+  }
+
+  // 1. Touch preview on all cards (tap to preview)
+  el.querySelectorAll('.mtg-card').forEach(function(cardEl) {
+    var cardId = cardEl.getAttribute('data-card-id');
+    var card = allCards.find(function(c) { return c.id == cardId; });
+    if (!card) return;
+
+    var tapTimer = null;
+    var longPressFired = false;
+
+    cardEl.addEventListener('touchstart', function(e) {
+      longPressFired = false;
+      window._touchMoved = false;
+      var touch = e.touches[0];
+      window._touchStartPos = { x: touch.clientX, y: touch.clientY };
+
+      // Long-press timer (500ms) for context menu / selection
+      tapTimer = setTimeout(function() {
+        if (window._touchMoved) return;
+        longPressFired = true;
+        e.preventDefault();
+
+        var fromZone = cardEl.getAttribute('data-zone');
+        var fromPlayer = cardEl.getAttribute('data-player');
+        var isStackCard = cardEl.getAttribute('data-stack-card') === 'true';
+
+        // If it's a battlefield card with counters, show context menu
+        if (fromZone === 'battlefield' && fromPlayer === myKey) {
+          // Create a synthetic event for positioning
+          var synthEvent = { clientX: touch.clientX, clientY: touch.clientY, preventDefault: function(){}, stopPropagation: function(){} };
+          showContextMenu(synthEvent, cardId, card, fromPlayer, battleId);
+          return;
+        }
+
+        // For other cards: select for moving
+        window.clearTouchSelection();
+        window._touchSelectedCard = { cardId: cardId, fromZone: fromZone, playerKey: fromPlayer || myKey, isStackCard: isStackCard, element: cardEl, card: card };
+        cardEl.classList.add('touch-selected');
+        showTouchSelectionBar(card, getZoneName(fromZone));
+        // Highlight drop zones
+        highlightTouchDropZones(el, myKey, oppKey, fromZone);
+      }, 500);
+    }, { passive: false });
+
+    cardEl.addEventListener('touchmove', function(e) {
+      var touch = e.touches[0];
+      var dx = Math.abs(touch.clientX - window._touchStartPos.x);
+      var dy = Math.abs(touch.clientY - window._touchStartPos.y);
+      if (dx > 10 || dy > 10) {
+        window._touchMoved = true;
+        if (tapTimer) { clearTimeout(tapTimer); tapTimer = null; }
+      }
+    });
+
+    cardEl.addEventListener('touchend', function(e) {
+      if (tapTimer) { clearTimeout(tapTimer); tapTimer = null; }
+      if (longPressFired) { e.preventDefault(); return; }
+      if (window._touchMoved) return;
+
+      // Short tap = preview
+      e.preventDefault();
+      showCardPreviewTouch(card);
+    });
+  });
+
+  // 2. Touch handlers for zone drop targets (receive selected card on tap)
+  var touchZoneTargets = [
+    { el: el.querySelector('#my-battlefield'), zone: 'battlefield', type: 'my' },
+    { el: el.querySelector('#my-hand'), zone: 'hand', type: 'my' },
+    { el: el.querySelector('#my-library'), zone: 'library', type: 'my' },
+    { el: el.querySelector('#' + myKey + '-graveyard'), zone: 'graveyard', type: 'my' },
+    { el: el.querySelector('#' + myKey + '-exile'), zone: 'exile', type: 'my' },
+    { el: el.querySelector('#' + myKey + '-outside_game'), zone: 'outside_game', type: 'my' },
+    { el: el.querySelector('#opp-battlefield'), zone: 'battlefield', type: 'opp' },
+    { el: el.querySelector('#' + oppKey + '-graveyard'), zone: 'graveyard', type: 'opp' },
+    { el: el.querySelector('#' + oppKey + '-exile'), zone: 'exile', type: 'opp' },
+    { el: el.querySelector('#' + oppKey + '-outside_game'), zone: 'outside_game', type: 'opp' }
+  ];
+
+  touchZoneTargets.forEach(function(item) {
+    if (!item.el) return;
+    item.el.addEventListener('touchend', function(e) {
+      if (!window._touchSelectedCard) return;
+      e.preventDefault();
+      var sel = window._touchSelectedCard;
+      if (item.type === 'opp') {
+        // Transfer control to opponent zone
+        if (sel.isStackCard && sel.fromZone === 'battlefield') {
+          mtgaAction(battleId, { type: 'unstack_card', card_id: sel.cardId, target_zone: 'battlefield' })
+            .then(function() {
+              return mtgaAction(battleId, { type: 'transfer_control', card_id: sel.cardId, from_zone: 'battlefield', to_zone: item.zone });
+            });
+        } else {
+          mtgaAction(battleId, { type: 'transfer_control', card_id: sel.cardId, from_zone: sel.fromZone, to_zone: item.zone });
+        }
+      } else if (sel.fromZone !== item.zone) {
+        // Move card to my zone
+        if (sel.isStackCard && sel.fromZone === 'battlefield') {
+          mtgaAction(battleId, { type: 'unstack_card', card_id: sel.cardId, target_zone: item.zone });
+        } else {
+          mtgaAction(battleId, { type: 'move_card', card_id: sel.cardId, from_zone: sel.fromZone, to_zone: item.zone });
+        }
+      }
+      window.clearTouchSelection();
+    });
+  });
+
+  // 3. Long-press on library stack for deck preview
+  var myLibEl = el.querySelector('#my-library');
+  if (myLibEl) {
+    var libTimer = null;
+    var libLongPress = false;
+    myLibEl.addEventListener('touchstart', function(e) {
+      libLongPress = false;
+      var touch = e.touches[0];
+      libTimer = setTimeout(function() {
+        libLongPress = true;
+        e.preventDefault();
+        var synthEvent = { clientX: touch.clientX, clientY: touch.clientY, preventDefault: function(){}, stopPropagation: function(){} };
+        showDeckPreviewMenu(synthEvent, gs, myKey, battleId);
+      }, 500);
+    }, { passive: false });
+    myLibEl.addEventListener('touchmove', function() {
+      if (libTimer) { clearTimeout(libTimer); libTimer = null; }
+    });
+    myLibEl.addEventListener('touchend', function(e) {
+      if (libTimer) { clearTimeout(libTimer); libTimer = null; }
+      if (libLongPress) e.preventDefault();
+    });
+  }
+
+  // 4. Long-press on empty battlefield area for token creation
+  var myBfTouch = el.querySelector('#my-battlefield');
+  if (myBfTouch) {
+    var bfTimer = null;
+    var bfLongPress = false;
+    myBfTouch.addEventListener('touchstart', function(e) {
+      if (e.target.closest('.mtg-card')) return;
+      bfLongPress = false;
+      var touch = e.touches[0];
+      bfTimer = setTimeout(function() {
+        bfLongPress = true;
+        e.preventDefault();
+        var synthEvent = { clientX: touch.clientX, clientY: touch.clientY, preventDefault: function(){}, stopPropagation: function(){} };
+        showBattlefieldContextMenu(synthEvent, myKey, battleId);
+      }, 500);
+    }, { passive: false });
+    myBfTouch.addEventListener('touchmove', function() {
+      if (bfTimer) { clearTimeout(bfTimer); bfTimer = null; }
+    });
+    myBfTouch.addEventListener('touchend', function(e) {
+      if (bfTimer) { clearTimeout(bfTimer); bfTimer = null; }
+      if (bfLongPress) e.preventDefault();
+    });
+  }
+
+  // 5. Tap anywhere else to cancel selection
+  document.addEventListener('touchend', function(e) {
+    if (!window._touchSelectedCard) return;
+    if (e.target.closest('.mtg-card') || e.target.closest('#touch-selection-bar') ||
+        e.target.closest('[data-zone]') || e.target.closest('.zone-overlay')) return;
+    window.clearTouchSelection();
+  });
+
+  function highlightTouchDropZones(el, myKey, oppKey, fromZone) {
+    // Highlight valid drop zones
+    var zones = el.querySelectorAll('[data-zone]');
+    zones.forEach(function(z) {
+      var zoneName = z.getAttribute('data-zone');
+      var zonePlayer = z.getAttribute('data-player');
+      // Don't highlight same zone for same player
+      if (zonePlayer === myKey && zoneName === fromZone) return;
+      z.classList.add('touch-drop-hint');
+    });
+    // Also highlight overlay zones
+    el.querySelectorAll('.zone-overlay').forEach(function(z) {
+      z.classList.add('touch-drop-hint');
+    });
+  }
 }
+
+// Touch preview modal (centered, full-size on mobile)
+function showCardPreviewTouch(card) {
+  hideCardPreview();
+  var overlay = document.createElement('div');
+  overlay.id = 'card-preview-popup';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.85);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+  var inner = '';
+  if (card.image) {
+    inner += '<img src="' + card.image + '" style="max-width:85vw;max-height:80vh;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.6)">';
+    if (card.image_back) {
+      inner += '<img src="' + card.image_back + '" style="max-width:85vw;max-height:80vh;border-radius:8px;margin-left:8px;box-shadow:0 4px 20px rgba(0,0,0,0.6)">';
+    }
+  } else {
+    inner = '<div style="background:#1c2440;padding:20px;border-radius:8px;max-width:85vw;color:#ccc;font-size:0.9rem">' +
+      '<div style="font-weight:700;color:#d4a043;margin-bottom:8px">' + (card.name || '') + '</div>' +
+      '<div style="margin-bottom:4px">' + (card.type || '') + '</div>' +
+      '<div style="margin-bottom:4px">' + (card.manaCost || '') + '</div>' +
+      '<div>' + (card.text || '') + '</div></div>';
+  }
+  overlay.innerHTML = inner;
+  overlay.addEventListener('click', function() { overlay.remove(); });
+  overlay.addEventListener('touchend', function(e) { e.preventDefault(); overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
+// Make clearTouchSelection globally accessible
+window.clearTouchSelection = function() {
+  window._touchSelectedCard = null;
+  document.querySelectorAll('.touch-selected').forEach(function(c) { c.classList.remove('touch-selected'); });
+  document.querySelectorAll('.touch-drop-hint').forEach(function(c) { c.classList.remove('touch-drop-hint'); });
+  var indicator = document.getElementById('touch-selection-bar');
+  if (indicator) indicator.remove();
+};
 
 // ============================================================
 // MTGA Actions - with immediate local re-render (fixes real-time bug)

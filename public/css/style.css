@@ -112,6 +112,45 @@ body {
   filter: drop-shadow(0 0 4px rgba(212, 160, 67, 0.5));
 }
 
+/* Hamburger toggle button (hidden on desktop) */
+.nav-toggle {
+  display: none;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  margin-right: 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+.nav-toggle:hover {
+  background: rgba(212, 160, 67, 0.08);
+}
+.nav-toggle span {
+  display: block;
+  width: 18px;
+  height: 2px;
+  background: var(--text-bright);
+  border-radius: 1px;
+  transition: all 0.2s;
+}
+.nav-toggle.active span:nth-child(1) {
+  transform: rotate(45deg) translate(4px, 4px);
+}
+.nav-toggle.active span:nth-child(2) {
+  opacity: 0;
+}
+.nav-toggle.active span:nth-child(3) {
+  transform: rotate(-45deg) translate(4px, -4px);
+}
+
 .nav-links {
   display: flex;
   gap: 4px;
@@ -3310,27 +3349,6 @@ textarea {
   border-color: var(--success);
 }
 
-/* Flipped Planeswalkers section */
-.bf-flipped-planeswalkers {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-  align-items: flex-end;
-  padding: 8px;
-  margin-top: auto;
-  background: rgba(212, 160, 67, 0.05);
-  border: 1px dashed var(--accent-dim);
-  border-radius: 8px;
-  min-height: 120px;
-}
-.bf-flipped-planeswalkers .flipped-pw {
-  position: relative;
-}
-.bf-flipped-planeswalkers .loyalty-badge {
-  margin-top: 4px;
-}
-
 /* Deck Preview Panel - centered modal */
 .deck-preview-panel {
   position: fixed;
@@ -3460,3 +3478,421 @@ textarea {
   box-shadow: 0 0 12px 3px var(--accent) !important;
   outline: 2px solid var(--accent);
 }
+
+/* ============================================================
+   MOBILE RESPONSIVE - Tablet & Phone
+   ============================================================ */
+
+/* ---------- Tablet / Small (max-width: 768px) ---------- */
+@media (max-width: 768px) {
+  /* Navbar: hamburger menu + dropdown */
+  .navbar {
+    padding: 8px 12px;
+    gap: 8px;
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 56px;
+  }
+  .nav-toggle {
+    display: flex;
+  }
+  .nav-brand {
+    font-size: 1rem;
+    flex-shrink: 0;
+    margin-right: auto;
+  }
+  .nav-links {
+    display: none;
+    flex-direction: column;
+    width: 100%;
+    order: 4;
+    gap: 2px;
+    padding: 8px 0;
+    border-top: 1px solid var(--border);
+    margin-top: 8px;
+  }
+  .nav-links.open {
+    display: flex;
+  }
+  .nav-links a {
+    padding: 10px 16px;
+    font-size: 0.95rem;
+    border-radius: var(--radius);
+  }
+  .nav-user {
+    flex-shrink: 0;
+    order: 3;
+  }
+  .nav-user-name {
+    font-size: 0.8rem;
+    padding: 6px 10px;
+  }
+
+  /* Main content */
+  #content {
+    padding: 12px;
+  }
+  .page-header {
+    flex-direction: column;
+    gap: 12px;
+    align-items: flex-start;
+  }
+  .page-header h2 {
+    font-size: 1.3rem;
+  }
+
+  /* Card grid: single column on small screens */
+  .card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* MTG cards: smaller */
+  .mtg-card {
+    width: 150px !important;
+  }
+  .mtg-cards-grid {
+    gap: 8px;
+    justify-content: center;
+  }
+
+  /* Modal: near full screen */
+  .modal {
+    width: 95%;
+    max-height: 90vh;
+    margin: 5vh auto;
+  }
+  .modal-header {
+    padding: 12px 16px;
+  }
+  .modal-body {
+    padding: 16px;
+  }
+
+  /* Form groups: stack nicely */
+  .form-group {
+    margin-bottom: 12px;
+  }
+  .form-group input,
+  .form-group select,
+  .form-group textarea {
+    font-size: 16px; /* Prevent zoom on iOS */
+  }
+
+  /* Draft layout: already stacks at 1024px, refine */
+  .draft-layout {
+    gap: 12px;
+  }
+  .draft-pack-cards .mtg-card {
+    width: 80px;
+  }
+
+  /* Draft pool: reduce columns */
+  .draft-pool-columns {
+    grid-template-columns: repeat(4, 1fr) !important;
+    gap: 6px;
+  }
+
+  /* Deck builder: full width */
+  .deck-builder-layout {
+    grid-template-columns: 1fr !important;
+    gap: 12px;
+  }
+  .deck-cards-sm .mtg-card {
+    width: 100px !important;
+  }
+
+  /* Battle action bar: full width */
+  .tt-action-bar {
+    left: 0 !important;
+    right: 0 !important;
+    transform: none !important;
+    width: 100% !important;
+    padding: 8px 12px !important;
+    border-radius: 0 !important;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: center;
+  }
+  .tt-action-bar .btn {
+    padding: 6px 12px;
+    font-size: 0.8rem;
+  }
+
+  /* Battle header: compact */
+  .tt-header {
+    padding: 8px 12px;
+    font-size: 0.85rem;
+  }
+  .tt-header-player {
+    padding: 4px 8px;
+    font-size: 0.8rem;
+  }
+
+  /* Toast: centered, full width */
+  .toast-container {
+    right: 8px !important;
+    left: 8px !important;
+    top: 60px;
+  }
+  .toast {
+    max-width: 100% !important;
+    width: 100% !important;
+  }
+
+  /* Deck preview panel */
+  .deck-preview-panel {
+    max-width: 98vw;
+    width: 98vw;
+    max-height: 85vh;
+  }
+  .deck-preview-card {
+    width: 60px;
+  }
+  .deck-preview-img {
+    width: 60px;
+  }
+  .deck-preview-placeholder {
+    width: 60px;
+    height: 84px;
+  }
+  .deck-preview-footer {
+    flex-wrap: wrap;
+    padding: 10px 12px;
+  }
+  .deck-preview-footer .btn {
+    min-width: 100px;
+    font-size: 0.8rem;
+    padding: 6px 12px;
+  }
+
+  /* MTGA zones: stack vertically */
+  .mtga-zones-row {
+    flex-direction: column !important;
+    gap: 8px;
+  }
+  .mtga-zone {
+    width: 100% !important;
+  }
+  .mtga-hand {
+    height: 140px;
+  }
+  .mtga-hand-inner {
+    height: 110px;
+  }
+
+  /* Search cards grid */
+  .search-cards-grid {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 8px;
+  }
+  .search-card-item {
+    max-width: 100%;
+  }
+
+  /* Battle loading */
+  .tt-loading {
+    padding: 24px 12px;
+  }
+
+  /* Cube detail header */
+  .cube-header-actions {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* Event detail */
+  .event-detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- Phone / Very Small (max-width: 480px) ---------- */
+@media (max-width: 480px) {
+  /* Navbar: minimal */
+  .navbar {
+    padding: 6px 8px;
+    gap: 6px;
+  }
+  .nav-brand {
+    font-size: 0.85rem;
+  }
+  .nav-links {
+    gap: 2px;
+  }
+  .nav-link {
+    padding: 5px 8px;
+    font-size: 0.75rem;
+  }
+  .nav-user-name {
+    font-size: 0.75rem;
+    padding: 5px 8px;
+  }
+
+  /* Content */
+  #content {
+    padding: 8px;
+  }
+  .page-header h2 {
+    font-size: 1.1rem;
+  }
+  .quick-actions {
+    gap: 6px;
+  }
+  .quick-actions .btn {
+    padding: 6px 10px;
+    font-size: 0.75rem;
+  }
+
+  /* MTG cards: even smaller */
+  .mtg-card {
+    width: 120px !important;
+  }
+  .mtg-cards-grid {
+    gap: 6px;
+  }
+
+  /* Card grid */
+  .card-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  /* Modal */
+  .modal {
+    width: 98%;
+    margin: 2vh auto;
+    max-height: 96vh;
+  }
+  .modal-title {
+    font-size: 1rem;
+  }
+
+  /* Draft: very compact */
+  .draft-layout {
+    gap: 8px;
+  }
+  .draft-pack-cards .mtg-card {
+    width: 64px;
+  }
+  .draft-pack-cards {
+    gap: 4px;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding-bottom: 4px;
+  }
+  .draft-pool-columns {
+    grid-template-columns: repeat(3, 1fr) !important;
+    gap: 4px;
+  }
+  .draft-pool-card {
+    width: 50px !important;
+  }
+
+  /* Deck builder */
+  .deck-cards-sm .mtg-card {
+    width: 80px !important;
+  }
+  .deck-builder-layout {
+    gap: 8px;
+  }
+
+  /* Battle: very compact */
+  .tt-action-bar {
+    padding: 6px 8px !important;
+    gap: 4px;
+  }
+  .tt-action-bar .btn {
+    padding: 5px 8px;
+    font-size: 0.7rem;
+  }
+  .tt-board {
+    grid-template-rows: auto 1fr 1fr auto !important;
+  }
+  .tt-hand {
+    min-height: 140px;
+  }
+  .tt-hand-inner {
+    height: 100px;
+  }
+  .tt-opp-hand-card {
+    width: 50px;
+    height: 72px;
+  }
+  .tt-battlefield .mtg-card.size-s {
+    width: 80px !important;
+  }
+
+  /* MTGA battle */
+  .mtga-hand {
+    height: 110px;
+  }
+  .mtga-hand-inner {
+    height: 80px;
+  }
+  .mtga-zone {
+    padding: 6px;
+  }
+  .mtga-life-group {
+    gap: 2px;
+  }
+  .mtga-life-group .btn {
+    padding: 3px 6px;
+    font-size: 0.7rem;
+  }
+
+  /* Deck preview: phone optimized */
+  .deck-preview-panel {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100vh;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+  .deck-preview-header {
+    padding: 10px 12px;
+    font-size: 0.9rem;
+  }
+  .deck-preview-body {
+    padding: 8px;
+  }
+  .deck-preview-card {
+    width: 50px;
+  }
+  .deck-preview-img {
+    width: 50px;
+  }
+  .deck-preview-placeholder {
+    width: 50px;
+    height: 70px;
+  }
+
+  /* Search */
+  .search-cards-grid {
+    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    gap: 6px;
+  }
+  .search-toolbar {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  /* Toast */
+  .toast-container {
+    right: 4px !important;
+    left: 4px !important;
+    top: 56px;
+  }
+
+  /* Buttons: touch-friendly */
+  .btn {
+    padding: 8px 14px;
+    font-size: 0.85rem;
+  }
+  .btn-sm {
+    padding: 5px 10px;
+    font-size: 0.75rem;
+  }
+}
+
+

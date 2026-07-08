@@ -10,6 +10,9 @@
   <div id="app">
     <nav id="navbar" class="navbar hidden">
       <div class="nav-brand" onclick="navigate('dashboard')">MTG 限制赛</div>
+      <button class="nav-toggle" onclick="toggleNavMenu()" aria-label="菜单">
+        <span></span><span></span><span></span>
+      </button>
       <div class="nav-links">
         <a onclick="navigate('dashboard')" data-page="dashboard">首页</a>
         <a onclick="navigate('cubes')" data-page="cubes">Cube管理</a>
