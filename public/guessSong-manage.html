@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>曲库管理 - 歌曲猜猜看</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: linear-gradient(135deg, #0a0e1a 0%, #1a1040 50%, #0d1530 100%);
+  color: #e0e0e0; min-height: 100vh; padding: 24px;
+}
+.header { text-align: center; margin-bottom: 32px; padding-top: 20px; }
+.header h1 {
+  font-size: 1.8rem; font-weight: 800;
+  background: linear-gradient(90deg, #a78bfa, #60a5fa);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  margin-bottom: 8px;
+}
+.header p { color: rgba(160,170,200,0.5); font-size: 0.85rem; }
+.toolbar {
+  display: flex; justify-content: center; gap: 12px; margin-bottom: 28px;
+}
+.toolbar a, .toolbar button {
+  color: #a78bfa; text-decoration: none; font-size: 0.85rem;
+  padding: 6px 16px; border: 1px solid rgba(167,139,250,0.3);
+  border-radius: 8px; transition: all 0.2s; background: none;
+  cursor: pointer; font-family: inherit;
+}
+.toolbar a:hover, .toolbar button:hover { background: rgba(167,139,250,0.12); }
+.container { max-width: 860px; margin: 0 auto; }
+
+/* Playlist list view */
+.pl-list { display: flex; flex-direction: column; gap: 12px; }
+.pl-item {
+  background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px; padding: 16px 20px;
+  display: flex; align-items: center; justify-content: space-between;
+  cursor: pointer; transition: all 0.2s;
+}
+.pl-item:hover { border-color: rgba(167,139,250,0.3); background: rgba(255,255,255,0.06); }
+.pl-info { flex: 1; }
+.pl-name { font-weight: 700; font-size: 1.05rem; margin-bottom: 4px; }
+.pl-meta { font-size: 0.8rem; color: rgba(160,170,200,0.5); }
+.pl-actions { display: flex; gap: 8px; }
+.pl-actions button {
+  padding: 6px 14px; border-radius: 6px; border: none;
+  font-size: 0.8rem; cursor: pointer; font-family: inherit; transition: all 0.2s;
+}
+.btn-edit { background: rgba(167,139,250,0.15); color: #a78bfa; }
+.btn-edit:hover { background: rgba(167,139,250,0.25); }
+.btn-del { background: rgba(239,68,68,0.15); color: #f87171; }
+.btn-del:hover { background: rgba(239,68,68,0.25); }
+
+/* Detail view */
+.detail-view { display: none; }
+.detail-view.active { display: block; }
+.list-view.hidden { display: none; }
+.detail-header {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 24px;
+}
+.detail-header h2 { font-size: 1.3rem; font-weight: 700; flex: 1; }
+.back-btn {
+  color: rgba(160,170,200,0.5); text-decoration: none; font-size: 0.85rem;
+  cursor: pointer; border: none; background: none; font-family: inherit;
+}
+.back-btn:hover { color: #a78bfa; }
+
+/* Search area */
+.search-area {
+  margin-bottom: 20px; display: flex; gap: 8px;
+}
+.search-area input {
+  flex: 1; padding: 10px 14px; border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.04);
+  color: #e0e0e0; font-size: 0.9rem; outline: none; font-family: inherit;
+}
+.search-area input:focus { border-color: rgba(167,139,250,0.5); }
+.search-area button {
+  padding: 10px 20px; border-radius: 8px; border: none;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff;
+  font-weight: 600; cursor: pointer; font-family: inherit;
+}
+
+/* Search results */
+.search-results {
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px; margin-bottom: 20px; max-height: 320px; overflow-y: auto;
+  display: none;
+}
+.search-results.active { display: block; }
+.sr-item {
+  padding: 10px 14px; display: flex; align-items: center; gap: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.sr-item:last-child { border-bottom: none; }
+.sr-info { flex: 1; }
+.sr-name { font-weight: 600; font-size: 0.9rem; }
+.sr-artist { font-size: 0.75rem; color: rgba(160,170,200,0.5); }
+.sr-add {
+  padding: 4px 12px; border-radius: 6px; border: none;
+  background: rgba(52,211,153,0.15); color: #34d399;
+  font-size: 0.75rem; cursor: pointer; font-family: inherit;
+}
+.sr-add:hover { background: rgba(52,211,153,0.25); }
+.sr-add:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Song list in playlist */
+.song-list {
+  background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px; max-height: 500px; overflow-y: auto;
+}
+.song-item {
+  padding: 10px 14px; display: flex; align-items: center; gap: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.song-item:last-child { border-bottom: none; }
+.song-info { flex: 1; }
+.song-name { font-weight: 600; font-size: 0.9rem; }
+.song-meta { font-size: 0.75rem; color: rgba(160,170,200,0.5); }
+.song-remove {
+  padding: 4px 12px; border-radius: 6px; border: none;
+  background: rgba(239,68,68,0.1); color: #f87171;
+  font-size: 0.75rem; cursor: pointer; font-family: inherit;
+}
+.song-remove:hover { background: rgba(239,68,68,0.2); }
+
+.empty-msg {
+  text-align: center; padding: 40px; color: rgba(160,170,200,0.4); font-size: 0.9rem;
+}
+
+/* Create dialog */
+.modal-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.6); display: none; align-items: center;
+  justify-content: center; z-index: 100;
+}
+.modal-overlay.active { display: flex; }
+.modal {
+  background: #1a1a2e; border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 16px; padding: 28px; width: 90%; max-width: 420px;
+}
+.modal h3 { margin-bottom: 20px; font-size: 1.2rem; }
+.modal label { display: block; font-size: 0.8rem; color: rgba(160,170,200,0.6); margin-bottom: 6px; }
+.modal input {
+  width: 100%; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.04);
+  color: #e0e0e0; font-size: 0.9rem; margin-bottom: 16px; outline: none;
+  font-family: inherit;
+}
+.modal input:focus { border-color: rgba(167,139,250,0.5); }
+.modal-btns { display: flex; gap: 10px; justify-content: flex-end; }
+.modal-btns button {
+  padding: 8px 20px; border-radius: 8px; border: none;
+  font-weight: 600; cursor: pointer; font-family: inherit; font-size: 0.9rem;
+}
+.btn-cancel { background: rgba(255,255,255,0.08); color: rgba(160,170,200,0.6); }
+.btn-confirm { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; }
+
+.toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: rgba(52,211,153,0.9); color: #fff; padding: 10px 24px;
+  border-radius: 8px; font-size: 0.85rem; font-weight: 600;
+  opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 200;
+}
+.toast.show { opacity: 1; }
+.toast.error { background: rgba(239,68,68,0.9); }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>📁 曲库管理</h1>
+  <p>管理你的猜歌曲库</p>
+</div>
+<div class="toolbar">
+  <a href="/guessSong">← 返回主页</a>
+  <button onclick="showCreateModal()">+ 新建曲库</button>
+</div>
+
+<div class="container">
+  <!-- Playlist list view -->
+  <div class="list-view" id="listView">
+    <div id="plList" class="pl-list">
+      <div class="empty-msg">加载中...</div>
+    </div>
+  </div>
+
+  <!-- Detail view -->
+  <div class="detail-view" id="detailView">
+    <div class="detail-header">
+      <button class="back-btn" onclick="showListView()">← 返回</button>
+      <h2 id="detailName"></h2>
+      <span class="pl-meta" id="detailCount"></span>
+    </div>
+
+    <div class="search-area">
+      <input type="text" id="searchInput" placeholder="搜索网易云音乐（歌名/歌手/动漫）..." onkeydown="if(event.key==='Enter')doSearch()">
+      <button onclick="doSearch()">搜索</button>
+    </div>
+    <div class="search-results" id="searchResults"></div>
+
+    <div id="songList" class="song-list"></div>
+  </div>
+</div>
+
+<!-- Create playlist modal -->
+<div class="modal-overlay" id="createModal">
+  <div class="modal">
+    <h3>新建曲库</h3>
+    <label>曲库名称</label>
+    <input type="text" id="newName" placeholder="例如：动漫OP精选">
+    <label>描述（可选）</label>
+    <input type="text" id="newDesc" placeholder="例如：经典动漫片头曲合集">
+    <div class="modal-btns">
+      <button class="btn-cancel" onclick="hideCreateModal()">取消</button>
+      <button class="btn-confirm" onclick="createPlaylist()">创建</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+var currentPlaylistId = null;
+var allPlaylists = [];
+
+function toast(msg, isError) {
+  var el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast show' + (isError ? ' error' : '');
+  setTimeout(function() { el.className = 'toast'; }, 2500);
+}
+
+function escHtml(s) {
+  var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML;
+}
+
+// Load playlists
+function loadPlaylists() {
+  fetch('/api/guessSong/playlists')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      allPlaylists = data;
+      renderPlaylists(data);
+    })
+    .catch(function() { toast('加载失败', true); });
+}
+
+function renderPlaylists(playlists) {
+  var el = document.getElementById('plList');
+  if (!playlists.length) {
+    el.innerHTML = '<div class="empty-msg">还没有曲库，点击"新建曲库"创建一个</div>';
+    return;
+  }
+  el.innerHTML = playlists.map(function(pl) {
+    return '<div class="pl-item" onclick="openPlaylist(\'' + pl.id + '\')">'
+      + '<div class="pl-info">'
+      + '<div class="pl-name">' + escHtml(pl.name) + '</div>'
+      + '<div class="pl-meta">' + pl.songCount + ' 首歌曲' + (pl.description ? ' · ' + escHtml(pl.description) : '') + '</div>'
+      + '</div>'
+      + '<div class="pl-actions">'
+      + '<button class="btn-del" onclick="event.stopPropagation();deletePlaylist(\'' + pl.id + '\',\'' + escHtml(pl.name) + '\')">删除</button>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+function showListView() {
+  document.getElementById('listView').classList.remove('hidden');
+  document.getElementById('detailView').classList.remove('active');
+  currentPlaylistId = null;
+  loadPlaylists();
+}
+
+function openPlaylist(id) {
+  currentPlaylistId = id;
+  document.getElementById('listView').classList.add('hidden');
+  document.getElementById('detailView').classList.add('active');
+  document.getElementById('searchInput').value = '';
+  document.getElementById('searchResults').classList.remove('active');
+  loadPlaylistDetail();
+}
+
+function loadPlaylistDetail() {
+  fetch('/api/guessSong/playlists/' + currentPlaylistId)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      document.getElementById('detailName').textContent = data.name;
+      document.getElementById('detailCount').textContent = data.songCount + ' 首';
+      renderSongs(data.songs || []);
+    })
+    .catch(function() { toast('加载曲库详情失败', true); });
+}
+
+function renderSongs(songs) {
+  var el = document.getElementById('songList');
+  if (!songs.length) {
+    el.innerHTML = '<div class="empty-msg">曲库为空，使用上方搜索添加歌曲</div>';
+    return;
+  }
+  el.innerHTML = songs.map(function(s) {
+    return '<div class="song-item">'
+      + '<div class="song-info">'
+      + '<div class="song-name">' + escHtml(s.name) + '</div>'
+      + '<div class="song-meta">' + escHtml(s.artist) + (s.anime ? ' · ' + escHtml(s.anime) : '') + (s.year ? ' · ' + s.year : '') + '</div>'
+      + '</div>'
+      + '<button class="song-remove" onclick="removeSong(' + s.id + ')">移除</button>'
+      + '</div>';
+  }).join('');
+}
+
+function doSearch() {
+  var q = document.getElementById('searchInput').value.trim();
+  if (!q) return;
+  var sr = document.getElementById('searchResults');
+  sr.innerHTML = '<div class="empty-msg">搜索中...</div>';
+  sr.classList.add('active');
+
+  fetch('/api/guessSong/search?q=' + encodeURIComponent(q))
+    .then(function(r) { return r.json(); })
+    .then(function(songs) {
+      if (!songs.length) {
+        sr.innerHTML = '<div class="empty-msg">没有找到结果</div>';
+        return;
+      }
+      sr.innerHTML = songs.map(function(s) {
+        return '<div class="sr-item">'
+          + '<div class="sr-info">'
+          + '<div class="sr-name">' + escHtml(s.name) + '</div>'
+          + '<div class="sr-artist">' + escHtml(s.artist) + (s.album ? ' · ' + escHtml(s.album) : '') + '</div>'
+          + '</div>'
+          + '<button class="sr-add" onclick="addSong(this,' + s.id + ',\'' + escHtml(s.name).replace(/'/g,"\\'") + '\',\'' + escHtml(s.artist).replace(/'/g,"\\'") + '\')">添加</button>'
+          + '</div>';
+      }).join('');
+    })
+    .catch(function() {
+      sr.innerHTML = '<div class="empty-msg">搜索失败</div>';
+    });
+}
+
+function addSong(btn, id, name, artist) {
+  btn.disabled = true;
+  btn.textContent = '添加中...';
+  fetch('/api/guessSong/playlists/' + currentPlaylistId + '/songs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ songs: [{ id: id, name: name, artist: artist }] })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.added > 0) {
+      btn.textContent = '已添加';
+      toast('添加成功');
+      loadPlaylistDetail();
+    } else {
+      btn.textContent = '已存在';
+      toast('该歌曲已在曲库中');
+    }
+  })
+  .catch(function() {
+    btn.disabled = false;
+    btn.textContent = '添加';
+    toast('添加失败', true);
+  });
+}
+
+function removeSong(songId) {
+  fetch('/api/guessSong/playlists/' + currentPlaylistId + '/songs/' + songId, { method: 'DELETE' })
+    .then(function(r) { return r.json(); })
+    .then(function() { toast('已移除'); loadPlaylistDetail(); })
+    .catch(function() { toast('移除失败', true); });
+}
+
+function showCreateModal() { document.getElementById('createModal').classList.add('active'); document.getElementById('newName').focus(); }
+function hideCreateModal() { document.getElementById('createModal').classList.remove('active'); }
+
+function createPlaylist() {
+  var name = document.getElementById('newName').value.trim();
+  var desc = document.getElementById('newDesc').value.trim();
+  if (!name) { toast('请输入曲库名称', true); return; }
+  fetch('/api/guessSong/playlists', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name, description: desc })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function() {
+    hideCreateModal();
+    document.getElementById('newName').value = '';
+    document.getElementById('newDesc').value = '';
+    toast('创建成功');
+    loadPlaylists();
+  })
+  .catch(function() { toast('创建失败', true); });
+}
+
+function deletePlaylist(id, name) {
+  if (!confirm('确定删除曲库「' + name + '」？此操作不可撤销。')) return;
+  fetch('/api/guessSong/playlists/' + id, { method: 'DELETE' })
+    .then(function(r) { return r.json(); })
+    .then(function() { toast('已删除'); loadPlaylists(); })
+    .catch(function() { toast('删除失败', true); });
+}
+
+// Init
+loadPlaylists();
+</script>
+</body>
+</html>

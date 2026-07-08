@@ -3125,6 +3125,21 @@ app.post('/api/shutdown', (req, res) => {
 const PLAYLISTS_DIR = path.join(__dirname, 'data', 'playlists');
 fs.mkdirSync(PLAYLISTS_DIR, { recursive: true });
 
+// Seed default playlists from bundled data if data/playlists is empty
+(function seedPlaylists() {
+  const existing = fs.readdirSync(PLAYLISTS_DIR).filter(f => f.endsWith('.json'));
+  if (existing.length === 0) {
+    const defaultDir = path.join(__dirname, 'default_playlists');
+    if (fs.existsSync(defaultDir)) {
+      const defaults = fs.readdirSync(defaultDir).filter(f => f.endsWith('.json'));
+      for (const f of defaults) {
+        fs.copyFileSync(path.join(defaultDir, f), path.join(PLAYLISTS_DIR, f));
+        console.log('Seeded playlist:', f);
+      }
+    }
+  }
+})();
+
 function loadPlaylists() {
   try {
     const files = fs.readdirSync(PLAYLISTS_DIR).filter(f => f.endsWith('.json'));
@@ -3301,6 +3316,13 @@ app.get('/api/guessSong/reveal', (req, res) => {
 
 // Legacy redirect
 app.get('/guessAnime', (req, res) => res.redirect('/guessSong'));
+
+// ============================================================
+// Home page
+// ============================================================
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'home.html'));
+});
 
 // ============================================================
 // SPA Fallback

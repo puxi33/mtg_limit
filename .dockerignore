@@ -2,8 +2,9 @@
 node_modules
 npm-debug.log
 
-# Data files (mounted as volume at runtime)
-data
+# Data files (mounted as volume at runtime), but keep playlists
+data/*
+!data/playlists
 
 # Logs
 *.log

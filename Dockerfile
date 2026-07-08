@@ -23,6 +23,7 @@ COPY --from=build /app/node_modules ./node_modules
 COPY server.js launcher.js ./
 COPY package.json ./
 COPY public ./public
+COPY data/playlists ./default_playlists
 
 # Create data directory (SQLite DB + Scryfall cache)
 RUN mkdir -p data && chown -R node:node data /app
