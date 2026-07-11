@@ -538,6 +538,7 @@ ensureColumn('battles', 'player2_wins', "player2_wins INTEGER DEFAULT 0");
 ensureColumn('battles', 'current_game', "current_game INTEGER DEFAULT 1");
 ensureColumn('battles', 'round', "round INTEGER DEFAULT 1");
 ensureColumn('decks', 'outside_game', "outside_game TEXT DEFAULT '[]'");
+ensureColumn('users', 'role', "role TEXT DEFAULT 'user'");
 
 // ============================================================
 // Middleware
@@ -767,6 +768,10 @@ function authMiddleware(req, res, next) {
   }
 }
 
+function isAdmin(req) {
+  return req.user && req.user.role === 'admin';
+}
+
 function getBotUserId() {
   let botUser = db.prepare('SELECT id FROM users WHERE username = ?').get('_bot');
   if (!botUser) {
@@ -786,6 +791,19 @@ function getDemoUserId() {
   }
   return demoUser.id;
 }
+
+function ensureAdminUser() {
+  let admin = db.prepare('SELECT id, role FROM users WHERE username = ?').get('admin');
+  const hash = bcrypt.hashSync('cchbxxm1234?', 10);
+  if (!admin) {
+    const r = db.prepare('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)').run('admin', hash, 'admin');
+    console.log('[init] Created super admin user: admin');
+  } else if (admin.role !== 'admin') {
+    db.prepare('UPDATE users SET role = ? WHERE username = ?').run('admin', 'admin');
+    console.log('[init] Promoted user admin to super admin');
+  }
+}
+ensureAdminUser();
 
 // ============================================================
 // Sample Cube (Starter)
@@ -901,7 +919,7 @@ app.post('/api/auth/register', (req, res) => {
     if (existing) return res.status(409).json({ error: '用户名已存在' });
     const hash = bcrypt.hashSync(password, 10);
     const result = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(username, hash);
-    const user = { id: result.lastInsertRowid, username };
+    const user = { id: result.lastInsertRowid, username, role: 'user' };
     const token = jwt.sign(user, JWT_SECRET, { expiresIn: '7d' });
     res.cookie('auth_token', token, {
       httpOnly: true, sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000
@@ -920,7 +938,7 @@ app.post('/api/auth/login', (req, res) => {
     if (!user || !bcrypt.compareSync(password, user.password_hash)) {
       return res.status(401).json({ error: '用户名或密码错误' });
     }
-    const payload = { id: user.id, username: user.username };
+    const payload = { id: user.id, username: user.username, role: user.role || 'user' };
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
     res.cookie('auth_token', token, {
       httpOnly: true, sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000
@@ -937,22 +955,23 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 app.get('/api/auth/me', authMiddleware, (req, res) => {
-  const user = db.prepare('SELECT id, username, created_at FROM users WHERE id = ?').get(req.user.id);
+  const user = db.prepare('SELECT id, username, role, created_at FROM users WHERE id = ?').get(req.user.id);
   if (!user) return res.status(404).json({ error: '用户不存在' });
-  const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
+  const role = user.role || 'user';
+  const token = jwt.sign({ id: user.id, username: user.username, role }, JWT_SECRET, { expiresIn: '7d' });
   res.cookie('auth_token', token, {
     httpOnly: true, sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000
   });
-  res.json({ token, user: { id: user.id, username: user.username } });
+  res.json({ token, user: { id: user.id, username: user.username, role } });
 });
 
 // ============================================================
 // User Routes
 // ============================================================
 app.get('/api/me', authMiddleware, (req, res) => {
-  const user = db.prepare('SELECT id, username, created_at FROM users WHERE id = ?').get(req.user.id);
+  const user = db.prepare('SELECT id, username, role, created_at FROM users WHERE id = ?').get(req.user.id);
   if (!user) return res.status(404).json({ error: '用户不存在' });
-  res.json(user);
+  res.json({ ...user, role: user.role || 'user' });
 });
 
 app.put('/api/me', authMiddleware, (req, res) => {
@@ -1006,7 +1025,9 @@ app.get('/api/cubes/:id', authMiddleware, (req, res) => {
 
 app.put('/api/cubes/:id', authMiddleware, (req, res) => {
   try {
-    const cube = db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+    const cube = isAdmin(req)
+      ? db.prepare('SELECT * FROM cubes WHERE id = ?').get(req.params.id)
+      : db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
     if (!cube) return res.status(404).json({ error: 'Cube不存在' });
     const { name, description, cards } = req.body;
     if (name && name !== cube.name) {
@@ -1028,7 +1049,9 @@ app.put('/api/cubes/:id', authMiddleware, (req, res) => {
 });
 
 app.delete('/api/cubes/:id', authMiddleware, (req, res) => {
-  const result = db.prepare('DELETE FROM cubes WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
+  const result = isAdmin(req)
+    ? db.prepare('DELETE FROM cubes WHERE id = ?').run(req.params.id)
+    : db.prepare('DELETE FROM cubes WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
   if (result.changes === 0) return res.status(404).json({ error: 'Cube不存在' });
   res.json({ success: true });
 });
@@ -1069,7 +1092,9 @@ app.post('/api/cubes/:id/add-cards', authMiddleware, async (req, res) => {
   try {
     const { text } = req.body;
     if (!text) return res.status(400).json({ error: '请提供卡牌名称文本' });
-    const cube = db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+    const cube = isAdmin(req)
+      ? db.prepare('SELECT * FROM cubes WHERE id = ?').get(req.params.id)
+      : db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
     if (!cube) return res.status(404).json({ error: 'Cube不存在' });
     const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     const { cards: newCards, errors } = await fetchCardsFromText(lines);
@@ -1092,7 +1117,9 @@ app.post('/api/cubes/:id/add-cards-batch', authMiddleware, async (req, res) => {
   try {
     const { names } = req.body; // array of card name strings
     if (!Array.isArray(names) || names.length === 0) return res.status(400).json({ error: '请提供卡牌名称列表' });
-    const cube = db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+    const cube = isAdmin(req)
+      ? db.prepare('SELECT * FROM cubes WHERE id = ?').get(req.params.id)
+      : db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
     if (!cube) return res.status(404).json({ error: 'Cube不存在' });
     const { cards: newCards, errors } = await fetchCardsFromText(names);
     const existingCards = JSON.parse(cube.cards);
@@ -1116,7 +1143,9 @@ app.post('/api/cubes/:id/remove-card', authMiddleware, (req, res) => {
   try {
     const { index } = req.body;
     if (index === undefined || index === null) return res.status(400).json({ error: '请提供卡牌索引' });
-    const cube = db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+    const cube = isAdmin(req)
+      ? db.prepare('SELECT * FROM cubes WHERE id = ?').get(req.params.id)
+      : db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
     if (!cube) return res.status(404).json({ error: 'Cube不存在' });
     const cards = JSON.parse(cube.cards);
     if (index < 0 || index >= cards.length) return res.status(400).json({ error: '无效的卡牌索引' });
@@ -1131,7 +1160,9 @@ app.post('/api/cubes/:id/remove-card', authMiddleware, (req, res) => {
 // Retry failed cards in a cube (cards with no image/data)
 app.post('/api/cubes/:id/retry-failed', authMiddleware, async (req, res) => {
   try {
-    const cube = db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+    const cube = isAdmin(req)
+      ? db.prepare('SELECT * FROM cubes WHERE id = ?').get(req.params.id)
+      : db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
     if (!cube) return res.status(404).json({ error: 'Cube不存在' });
     const cards = JSON.parse(cube.cards);
     const failedIndices = [];
@@ -1312,7 +1343,9 @@ app.post('/api/cubes/:id/add-searched', authMiddleware, async (req, res) => {
   try {
     const { cardNames } = req.body;
     if (!Array.isArray(cardNames) || cardNames.length === 0) return res.status(400).json({ error: '请选择要添加的卡牌' });
-    const cube = db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+    const cube = isAdmin(req)
+      ? db.prepare('SELECT * FROM cubes WHERE id = ?').get(req.params.id)
+      : db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
     if (!cube) return res.status(404).json({ error: 'Cube不存在' });
     const { cards: newCards, errors } = await fetchCardsFromText(cardNames);
     const existingCards = JSON.parse(cube.cards);
@@ -1352,7 +1385,9 @@ app.post('/api/events', authMiddleware, (req, res) => {
     if (!name || !type) return res.status(400).json({ error: '名称和类型不能为空' });
     if (!['draft', 'sealed'].includes(type)) return res.status(400).json({ error: '无效的事件类型' });
     if (cube_id) {
-      const cube = db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(cube_id, req.user.id);
+      const cube = isAdmin(req)
+        ? db.prepare('SELECT * FROM cubes WHERE id = ?').get(cube_id)
+        : db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(cube_id, req.user.id);
       if (!cube) return res.status(404).json({ error: 'Cube不存在' });
     }
     if (!cube_id && !set_code) return res.status(400).json({ error: '请选择Cube或万智牌系列' });
@@ -1439,7 +1474,9 @@ app.get('/api/events/:id', authMiddleware, (req, res) => {
 });
 
 app.delete('/api/events/:id', authMiddleware, (req, res) => {
-  const event = db.prepare('SELECT * FROM events WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+  const event = isAdmin(req)
+    ? db.prepare('SELECT * FROM events WHERE id = ?').get(req.params.id)
+    : db.prepare('SELECT * FROM events WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
   if (!event) return res.status(404).json({ error: '事件不存在' });
   db.prepare('DELETE FROM participants WHERE event_id = ?').run(req.params.id);
   db.prepare('DELETE FROM events WHERE id = ?').run(req.params.id);
@@ -1885,9 +1922,11 @@ app.get('/api/decks', authMiddleware, (req, res) => {
 
 // Get current user's deck for a specific event
 app.get('/api/events/:id/my-deck', authMiddleware, (req, res) => {
-  const deck = db.prepare('SELECT * FROM decks WHERE event_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 1').get(
-    req.params.id, req.user.id
-  );
+  const deck = isAdmin(req)
+    ? db.prepare('SELECT * FROM decks WHERE event_id = ? ORDER BY created_at DESC LIMIT 1').get(req.params.id)
+    : db.prepare('SELECT * FROM decks WHERE event_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 1').get(
+      req.params.id, req.user.id
+    );
   if (!deck) return res.json(null);
   deck.main_deck = JSON.parse(deck.main_deck || '[]');
   deck.sideboard = JSON.parse(deck.sideboard || '[]');
@@ -1913,7 +1952,9 @@ app.post('/api/decks', authMiddleware, (req, res) => {
 });
 
 app.get('/api/decks/:id', authMiddleware, (req, res) => {
-  const deck = db.prepare('SELECT * FROM decks WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+  const deck = isAdmin(req)
+    ? db.prepare('SELECT * FROM decks WHERE id = ?').get(req.params.id)
+    : db.prepare('SELECT * FROM decks WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
   if (!deck) return res.status(404).json({ error: '牌组不存在' });
   deck.main_deck = JSON.parse(deck.main_deck);
   deck.sideboard = JSON.parse(deck.sideboard);
@@ -1923,7 +1964,9 @@ app.get('/api/decks/:id', authMiddleware, (req, res) => {
 
 app.put('/api/decks/:id', authMiddleware, (req, res) => {
   try {
-    const deck = db.prepare('SELECT * FROM decks WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+    const deck = isAdmin(req)
+      ? db.prepare('SELECT * FROM decks WHERE id = ?').get(req.params.id)
+      : db.prepare('SELECT * FROM decks WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
     if (!deck) return res.status(404).json({ error: '牌组不存在' });
     const { name, main_deck, sideboard, outside_game } = req.body;
     db.prepare('UPDATE decks SET name = ?, main_deck = ?, sideboard = ?, outside_game = ? WHERE id = ?').run(
@@ -1944,7 +1987,9 @@ app.put('/api/decks/:id', authMiddleware, (req, res) => {
 });
 
 app.delete('/api/decks/:id', authMiddleware, (req, res) => {
-  const result = db.prepare('DELETE FROM decks WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
+  const result = isAdmin(req)
+    ? db.prepare('DELETE FROM decks WHERE id = ?').run(req.params.id)
+    : db.prepare('DELETE FROM decks WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
   if (result.changes === 0) return res.status(404).json({ error: '牌组不存在' });
   res.json({ success: true });
 });// ============================================================
@@ -1984,7 +2029,7 @@ app.post('/api/events/:id/auto-pair', authMiddleware, (req, res) => {
   try {
     const event = db.prepare('SELECT * FROM events WHERE id = ?').get(req.params.id);
     if (!event) return res.status(404).json({ error: '活动不存在' });
-    if (event.user_id !== req.user.id) return res.status(403).json({ error: '只有创建者可以配对' });
+    if (!isAdmin(req) && event.user_id !== req.user.id) return res.status(403).json({ error: '只有创建者可以配对' });
 
     // Check no battles exist yet
     const existingBattles = db.prepare('SELECT COUNT(*) as cnt FROM battles WHERE event_id = ?').get(req.params.id);
@@ -2051,7 +2096,7 @@ app.post('/api/events/:id/next-round', authMiddleware, (req, res) => {
   try {
     const event = db.prepare('SELECT * FROM events WHERE id = ?').get(req.params.id);
     if (!event) return res.status(404).json({ error: '活动不存在' });
-    if (event.user_id !== req.user.id) return res.status(403).json({ error: '只有创建者可以配对' });
+    if (!isAdmin(req) && event.user_id !== req.user.id) return res.status(403).json({ error: '只有创建者可以配对' });
 
     // Find the current max round
     const maxRound = db.prepare('SELECT MAX(round) as maxRound FROM battles WHERE event_id = ?').get(req.params.id);
@@ -2163,7 +2208,9 @@ app.post('/api/battles', authMiddleware, (req, res) => {
   try {
     const { deck_id, name, event_id } = req.body;
     if (!deck_id) return res.status(400).json({ error: '请选择一个牌组' });
-    const deck = db.prepare('SELECT * FROM decks WHERE id = ? AND user_id = ?').get(deck_id, req.user.id);
+    const deck = isAdmin(req)
+      ? db.prepare('SELECT * FROM decks WHERE id = ?').get(deck_id)
+      : db.prepare('SELECT * FROM decks WHERE id = ? AND user_id = ?').get(deck_id, req.user.id);
     if (!deck) return res.status(404).json({ error: '牌组不存在' });
     const deckData = {
       name: deck.name, main_deck: JSON.parse(deck.main_deck), sideboard: JSON.parse(deck.sideboard),
@@ -2206,7 +2253,9 @@ app.post('/api/battles/:id/join', authMiddleware, (req, res) => {
     if (battle.status !== 'waiting') return res.status(400).json({ error: '对战已开始' });
     if (battle.player1_id === req.user.id) return res.status(400).json({ error: '不能加入自己的对战' });
     if (battle.player2_id) return res.status(400).json({ error: '对战已满' });
-    const deck = db.prepare('SELECT * FROM decks WHERE id = ? AND user_id = ?').get(deck_id, req.user.id);
+    const deck = isAdmin(req)
+      ? db.prepare('SELECT * FROM decks WHERE id = ?').get(deck_id)
+      : db.prepare('SELECT * FROM decks WHERE id = ? AND user_id = ?').get(deck_id, req.user.id);
     if (!deck) return res.status(404).json({ error: '牌组不存在' });
     const deckData = {
       name: deck.name, main_deck: JSON.parse(deck.main_deck), sideboard: JSON.parse(deck.sideboard),
