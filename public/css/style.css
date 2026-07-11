@@ -3895,4 +3895,289 @@ textarea {
   }
 }
 
+/* ============================================================
+   Draft Page Redesign — Two-panel layout
+   ============================================================ */
+
+/* Full-screen draft: remove content width constraints */
+body.draft-fullscreen {
+  overflow: auto !important;
+  height: auto !important;
+}
+body.draft-fullscreen html {
+  overflow: auto !important;
+  height: auto !important;
+}
+body.draft-fullscreen #content {
+  max-width: none;
+  padding-left: 0;
+  padding-right: 0;
+  height: auto !important;
+  overflow: visible !important;
+}
+body.draft-fullscreen #content > .page-header {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+.draft-redesign {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 120px);
+  gap: 0;
+}
+
+/* Upper: pick strip */
+.draft-pick-strip {
+  flex-shrink: 0;
+  background: var(--bg-card);
+  border-bottom: 2px solid var(--border);
+  padding: 6px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.draft-pick-strip-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.draft-pick-strip-header h3 {
+  color: var(--text-bright);
+  font-size: 0.95rem;
+  margin: 0;
+}
+.draft-pick-scroll {
+  display: flex;
+  gap: 3px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0 6px;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+}
+.draft-pick-scroll::-webkit-scrollbar { height: 6px; }
+.draft-pick-scroll::-webkit-scrollbar-track { background: var(--bg-darkest); border-radius: 3px; }
+.draft-pick-scroll::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 3px; }
+.draft-pick-scroll .mtg-card {
+  width: 120px !important;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.draft-pick-scroll .mtg-card:hover {
+  transform: translateY(-6px) scale(1.03);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5), 0 0 0 1px rgba(212,160,67,0.3);
+  z-index: 10;
+}
+.draft-pick-scroll .mtg-card.selected {
+  border: 2px solid var(--accent);
+  box-shadow: 0 0 0 3px var(--accent), 0 8px 24px rgba(212,160,67,0.35);
+  transform: translateY(-8px) scale(1.05);
+  z-index: 2;
+}
+.draft-pick-scroll .mtg-card.staged {
+  opacity: 0.4;
+  pointer-events: none;
+  transform: scale(0.95);
+  filter: grayscale(0.5);
+  box-shadow: 0 0 0 2px rgba(76, 185, 100, 0.5);
+}
+.draft-pick-scroll .mtg-card.staged::after {
+  content: '\2713';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 2.5rem;
+  color: var(--success);
+  font-weight: 700;
+  text-shadow: 0 0 12px rgba(0,0,0,0.9);
+  pointer-events: none;
+}
+.draft-pick-scroll .mtg-card.single-pick-flash {
+  animation: singlePickGlow 0.3s ease-out forwards;
+}
+@keyframes singlePickGlow {
+  0% { box-shadow: 0 0 0 0 rgba(212,160,67,0); }
+  100% { box-shadow: 0 0 0 4px var(--accent), 0 8px 24px rgba(212,160,67,0.4); }
+}
+
+/* Lower: columns area */
+.draft-columns-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.draft-columns-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px;
+  background: var(--bg-dark);
+  border-bottom: 1px solid var(--border);
+}
+.draft-columns-scroll {
+  flex: 1;
+  min-height: 200px;
+  display: flex;
+  gap: 0;
+  overflow-x: auto;
+  padding: 0;
+  background: var(--bg-darkest);
+}
+.draft-columns-scroll::-webkit-scrollbar { height: 6px; }
+.draft-columns-scroll::-webkit-scrollbar-track { background: var(--bg-darkest); }
+.draft-columns-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* Individual column */
+.draft-column {
+  flex: 1;
+  min-width: 110px;
+  background: var(--bg-card);
+  border: none;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.draft-column:last-child {
+  border-right: none;
+}
+.draft-column.drag-over {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 12px rgba(212,160,67,0.15);
+}
+.draft-column.sideboard {
+  border-color: rgba(231,76,60,0.3);
+}
+.draft-column.sideboard .draft-column-header {
+  background: linear-gradient(180deg, rgba(231,76,60,0.12), transparent);
+}
+.draft-column-header {
+  flex-shrink: 0;
+  padding: 4px 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-bright);
+  user-select: none;
+}
+.draft-column-count {
+  color: var(--text-muted);
+  font-weight: 400;
+  font-size: 0.68rem;
+}
+.draft-column-body {
+  flex: 1;
+  overflow-y: visible;
+  overflow-x: hidden;
+  position: relative;
+  min-height: 40px;
+  padding: 4px;
+}
+.draft-column-body::-webkit-scrollbar { width: 4px; }
+.draft-column-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* Cards inside columns — stacked with offset */
+.draft-column-card {
+  position: relative;
+  cursor: grab;
+  transition: transform 0.15s, box-shadow 0.15s, z-index 0s;
+  border-radius: 4px;
+  z-index: 1;
+}
+.draft-column-card:last-child {
+  margin-bottom: 0;
+}
+.draft-column-card:hover {
+  transform: translateX(4px) scale(1.02);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  z-index: 100 !important;
+}
+.draft-column-card img {
+  width: 100%;
+  display: block;
+  border-radius: 4px;
+  pointer-events: none;
+}
+.draft-column-card .draft-col-card-name {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  right: 4px;
+  background: rgba(0,0,0,0.8);
+  color: var(--text);
+  font-size: 0.6rem;
+  padding: 2px 4px;
+  border-radius: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.draft-column-card .draft-col-card-count {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: var(--accent);
+  color: var(--bg-darkest);
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 8px;
+  pointer-events: none;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+  z-index: 2;
+}
+.draft-column-card.dragging {
+  opacity: 0.4;
+}
+
+/* Empty column placeholder */
+.draft-column-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 60px;
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  text-align: center;
+  padding: 8px;
+}
+
+/* Waiting banner in columns area */
+.draft-waiting-banner {
+  flex-shrink: 0;
+  text-align: center;
+  padding: 10px 16px;
+  background: linear-gradient(135deg, rgba(243,156,18,0.15), rgba(243,156,18,0.05));
+  border-bottom: 1px solid var(--warning);
+  color: var(--warning);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.draft-waiting-banner .text-muted {
+  font-weight: 400;
+  font-size: 0.8rem;
+  margin-top: 2px;
+}
+
+/* Draft completed banner */
+.draft-complete-banner {
+  flex-shrink: 0;
+  text-align: center;
+  padding: 10px 16px;
+  background: linear-gradient(135deg, rgba(76,185,100,0.15), rgba(76,185,100,0.05));
+  border-bottom: 1px solid var(--success);
+  color: var(--success);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
 

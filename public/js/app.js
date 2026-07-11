@@ -234,6 +234,8 @@ function navigate(page, params = {}, opts = {}) {
   state.currentPage = page;
   state.pageData = params;
   closeNavMenu(); // Close mobile nav on navigate
+  document.body.classList.remove('draft-fullscreen');
+  _manualPlacements = {};
 
   // 同步 URL (history API)
   if (!opts.skipUrl) {
@@ -1259,10 +1261,14 @@ async function handleCreateEvent(e) {
 
 async function renderEventDetail(el, id) {
   el.innerHTML = '<div class="text-center text-muted">加载中...</div>';
-  // Stop any existing draft polling
+  // Stop any existing draft polling and reset state
   if (draftPollInterval) { clearInterval(draftPollInterval); draftPollInterval = null; }
   window._draftWaiting = false;
   window._lastPackIds = null;
+  window._lastPoolSize = null;
+  window._autoDeckInProgress = false;
+  _draftColumns = null;
+  _manualPlacements = {};
 
   try {
     const [event, myDeckRaw, eventBattlesRaw] = await Promise.all([
@@ -1356,74 +1362,34 @@ async function renderEventDetail(el, id) {
         </div>
       </div>
 
-      <div class="event-info-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px">
-        <div class="stat-card"><div class="stat-value">${participants.length}/${settings.max_players || '?'}</div><div class="stat-label">参与者</div></div>
-        <div class="stat-card"><div class="stat-value">${settings.packs_per_player || '?'}</div><div class="stat-label">包数/人</div></div>
-        <div class="stat-card"><div class="stat-value">${settings.cards_per_pack || '?'}</div><div class="stat-label">卡牌/包</div></div>
-        ${event.type === 'draft' ? `<div class="stat-card"><div class="stat-value">${cardsPerPick}</div><div class="stat-label">每次选牌数</div></div>` : ''}
-        ${event.set_name ? `<div class="stat-card"><div class="stat-value" style="font-size:0.85rem">${escapeHtml(event.set_name)}</div><div class="stat-label">系列 (${event.set_code})</div></div>` : ''}
-        ${event.cube_name ? `<div class="stat-card"><div class="stat-value" style="font-size:0.85rem">${escapeHtml(event.cube_name)}</div><div class="stat-label">Cube</div></div>` : ''}
-      </div>
-
-      ${event.round_status ? `
-        <div style="margin-bottom:16px;padding:12px;background:var(--surface);border-radius:8px">
-          <strong style="color:var(--text-bright)">轮次状态:</strong>
-          ${event.round_status.picked.length > 0 ? `<span class="text-muted"> 已选: ${event.round_status.picked.map(p => p.username || `座位${p.seat}`).join(', ')}</span>` : ''}
-          ${event.round_status.waiting_for.length > 0 ? `<span style="color:var(--warning)"> | 等待: ${event.round_status.waiting_for.map(p => p.username || `座位${p.seat}`).join(', ')}</span>` : ''}
-        </div>
-      ` : ''}
-
-      ${isParticipant && isMyTurnToPick ? `
-        <div class="draft-layout" style="display:flex;gap:16px;align-items:flex-start;margin-bottom:24px">
-          <!-- LEFT: Pick Area -->
-          <div class="draft-pick-side" style="flex:1;min-width:0">
-            <h3 style="color:var(--text-bright);margin-bottom:8px">
-              ${event.type === 'draft' ? '轮抓选牌' : '牌池'}
-            </h3>
-            <div id="draft-pick-area">
-              <div id="draft-confirm-bar" class="hidden" style="margin-bottom:12px;padding:12px;background:var(--surface);border-radius:8px;display:flex;align-items:center;gap:12px">
-                <span id="draft-selected-count">已选: 0 / ${cardsPerPick}</span>
+      ${isParticipant && (isMyTurnToPick || (event.status === 'in_progress' && myParticipation.pool && myParticipation.pool.length > 0)) ? `
+        <div class="draft-redesign" id="draft-redesign">
+          <div class="draft-pick-strip" id="draft-pick-strip">
+            <div class="draft-pick-strip-header" ${!isMyTurnToPick ? 'style="display:none"' : ''}>
+              <h3>${event.type === 'draft' ? '轮抓选牌' : '牌池'}</h3>
+              <div id="draft-confirm-bar" class="hidden" style="display:flex;align-items:center;gap:10px">
+                <span id="draft-selected-count" style="font-size:0.85rem;color:var(--text-muted)">已选: 0 / ${cardsPerPick}</span>
                 <button class="btn btn-primary btn-sm" id="draft-confirm-btn" onclick="confirmDraftPick(${id})" disabled>确认选择</button>
               </div>
-              <div id="draft-cards-container" class="mtg-cards-grid"></div>
             </div>
+            <div id="draft-cards-container" class="draft-pick-scroll" ${!isMyTurnToPick ? 'style="display:none"' : ''}></div>
+            ${!isMyTurnToPick ? '<div class="draft-waiting-msg" style="text-align:center;padding:20px 16px;color:var(--warning);font-weight:600;font-size:0.9rem">等待其他玩家选牌...<div class="text-muted" style="font-weight:400;font-size:0.8rem;margin-top:4px">页面会自动刷新</div></div>' : ''}
           </div>
-          <!-- RIGHT: Drafted Pool -->
-          <div class="draft-pool-side" style="width:320px;flex-shrink:0;position:sticky;top:16px;max-height:calc(100vh - 32px);overflow-y:auto;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)">
-              <h3 style="color:var(--text-bright);margin:0;font-size:0.95rem">已抓到的牌</h3>
-              <span class="text-muted" style="font-size:0.85rem">${myParticipation.pool ? myParticipation.pool.length : 0}张</span>
+          <div class="draft-columns-area" id="draft-columns-area">
+            <div class="draft-columns-header">
+              <span style="color:var(--text-bright);font-size:0.85rem;font-weight:600">已抓到的牌 <span class="text-muted" id="draft-pool-count" style="font-weight:400">${myParticipation.pool ? myParticipation.pool.length : 0}张</span></span>
             </div>
-            <div id="event-pool-container"></div>
-          </div>
-        </div>
-      ` : isParticipant && event.status === 'in_progress' ? `
-        <!-- Full-width pool while waiting for other players -->
-        <div style="margin-bottom:24px">
-          <div style="text-align:center;padding:16px;margin-bottom:12px;background:linear-gradient(135deg,rgba(243,156,18,0.15),rgba(243,156,18,0.05));border:1px solid var(--warning);border-radius:var(--radius-lg)">
-            <p style="color:var(--warning);font-weight:600;font-size:1rem;margin:0">等待其他玩家选牌...</p>
-            <p class="text-muted" style="font-size:0.85rem;margin-top:4px">页面会自动刷新</p>
-          </div>
-          <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)">
-              <h3 style="color:var(--text-bright);margin:0;font-size:0.95rem">已抓到的牌</h3>
-              <span class="text-muted" style="font-size:0.85rem">${myParticipation.pool ? myParticipation.pool.length : 0}张</span>
-            </div>
-            <div id="event-pool-container"></div>
+            <div class="draft-columns-scroll" id="draft-columns-scroll"></div>
           </div>
         </div>
       ` : isParticipant && event.status === 'completed' && myParticipation.pool && myParticipation.pool.length > 0 ? `
-        <!-- Full-width pool when draft is completed -->
-        <div style="margin-bottom:24px">
-          <div style="text-align:center;padding:12px;margin-bottom:12px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg)">
-            <p style="color:var(--text-muted);font-weight:600;font-size:1rem;margin:0">轮抓已结束</p>
-          </div>
-          <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border)">
-              <h3 style="color:var(--text-bright);margin:0;font-size:0.95rem">已抓到的牌</h3>
-              <span class="text-muted" style="font-size:0.85rem">${myParticipation.pool.length}张</span>
+        <div class="draft-redesign" id="draft-redesign">
+          <div class="draft-complete-banner" id="draft-complete-banner">轮抓已结束 — 正在自动创建牌组...</div>
+          <div class="draft-columns-area" id="draft-columns-area">
+            <div class="draft-columns-header">
+              <span style="color:var(--text-bright);font-size:0.85rem;font-weight:600">已抓到的牌 <span class="text-muted" style="font-weight:400">${myParticipation.pool.length}张</span></span>
             </div>
-            <div id="event-pool-container"></div>
+            <div class="draft-columns-scroll" id="draft-columns-scroll"></div>
           </div>
         </div>
       ` : ''}
@@ -1580,9 +1546,34 @@ async function renderEventDetail(el, id) {
           </div>
         `}).join('') || '<div class="text-muted">暂无参与者</div>'}
       </div>
+
+      <!-- Event Info (bottom section) -->
+      <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border)">
+        <div class="event-info-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px">
+          <div class="stat-card"><div class="stat-value">${participants.length}/${settings.max_players || '?'}</div><div class="stat-label">参与者</div></div>
+          <div class="stat-card"><div class="stat-value">${settings.packs_per_player || '?'}</div><div class="stat-label">包数/人</div></div>
+          <div class="stat-card"><div class="stat-value">${settings.cards_per_pack || '?'}</div><div class="stat-label">卡牌/包</div></div>
+          ${event.type === 'draft' ? `<div class="stat-card"><div class="stat-value">${cardsPerPick}</div><div class="stat-label">每次选牌数</div></div>` : ''}
+          ${event.set_name ? `<div class="stat-card"><div class="stat-value" style="font-size:0.85rem">${escapeHtml(event.set_name)}</div><div class="stat-label">系列 (${event.set_code})</div></div>` : ''}
+          ${event.cube_name ? `<div class="stat-card"><div class="stat-value" style="font-size:0.85rem">${escapeHtml(event.cube_name)}</div><div class="stat-label">Cube</div></div>` : ''}
+        </div>
+      </div>
+
+      ${event.round_status ? `
+        <div style="margin-bottom:16px;padding:12px;background:var(--surface);border-radius:8px">
+          <strong style="color:var(--text-bright)">轮次状态:</strong>
+          ${event.round_status.picked.length > 0 ? `<span class="text-muted"> 已选: ${event.round_status.picked.map(p => p.username || `座位${p.seat}`).join(', ')}</span>` : ''}
+          ${event.round_status.waiting_for.length > 0 ? `<span style="color:var(--warning)"> | 等待: ${event.round_status.waiting_for.map(p => p.username || `座位${p.seat}`).join(', ')}</span>` : ''}
+        </div>
+      ` : ''}
     `;
 
-    // Render draft cards for picking
+    // Full-screen mode for draft redesign
+    if (el.querySelector('#draft-redesign')) {
+      document.body.classList.add('draft-fullscreen');
+    }
+
+    // Render draft cards for picking (upper panel)
     if (isMyTurnToPick) {
       const container = el.querySelector('#draft-cards-container');
       if (container) {
@@ -1590,9 +1581,22 @@ async function renderEventDetail(el, id) {
       }
     }
 
-    // Render pool cards (already drafted)
+    // Initialize draft columns (lower panel)
     if (isParticipant && myParticipation.pool && myParticipation.pool.length > 0) {
-      updateDraftPool(myParticipation);
+      initDraftColumns(myParticipation.pool);
+      renderDraftColumns();
+    } else if (isParticipant && document.getElementById('draft-columns-scroll')) {
+      // Show empty columns even if no pool yet
+      initDraftColumns([]);
+      renderDraftColumns();
+    }
+
+    // Auto create deck when draft is completed and no deck exists yet
+    if (event.status === 'completed' && isParticipant && myParticipation.pool && myParticipation.pool.length > 0 && !myDeck && !window._autoDeckInProgress) {
+      window._autoDeckInProgress = true;
+      autoCreateDeckFromDraft(id, myParticipation.pool).then(function() {
+        window._autoDeckInProgress = false;
+      });
     }
 
     // Render deck overview
@@ -1712,10 +1716,13 @@ async function deleteEvent(id) {
 // ============================================================
 let draftPollInterval = null;
 let draftSelectedCards = [];
+var _draftStagedPicks = []; // Cards dragged from pick strip (multi-pick staging)
+var _manualPlacements = {}; // { cardId: columnKey } — tracks user drag placements
 
 function renderDraftCards(cards, cardsPerPick) {
   window._draftWaiting = false;
   window._lastPackIds = cards.map(c => String(c.id));
+  window._currentDraftPack = cards; // Store for drag-drop access
   const container = document.getElementById('draft-cards-container');
   if (!container) return;
 
@@ -1729,12 +1736,17 @@ function renderDraftCards(cards, cardsPerPick) {
       confirmBar.classList.add('hidden');
     }
   }
+  // Reset confirm button text
+  var confirmBtnReset = document.getElementById('draft-confirm-btn');
+  if (confirmBtnReset) { confirmBtnReset.disabled = true; confirmBtnReset.textContent = '确认选择'; }
 
   draftSelectedCards = [];
   container.innerHTML = '';
 
   cards.forEach(card => {
+    const isStaged = _draftStagedPicks.some(s => String(s.id) === String(card.id));
     const el = createCardElement(card, () => {
+      if (isStaged) return; // staged cards don't respond to clicks
       if (cardsPerPick <= 1) {
         // Single pick: flash highlight then auto-confirm
         el.classList.add('selected', 'single-pick-flash');
@@ -1746,6 +1758,25 @@ function renderDraftCards(cards, cardsPerPick) {
       }
     });
     el.setAttribute('data-card-id', card.id);
+
+    // Enable drag from pick strip (not for already-staged cards)
+    if (!isStaged) {
+      el.setAttribute('draggable', 'true');
+      el.addEventListener('dragstart', function(e) {
+        e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'pick', cardId: card.id }));
+        e.dataTransfer.effectAllowed = 'move';
+        el.style.opacity = '0.5';
+      });
+      el.addEventListener('dragend', function() {
+        el.style.opacity = '';
+        document.querySelectorAll('.draft-column.drag-over').forEach(function(col) { col.classList.remove('drag-over'); });
+      });
+    }
+
+    if (isStaged) {
+      el.classList.add('staged');
+    }
+
     container.appendChild(el);
   });
 
@@ -1776,7 +1807,7 @@ function updateDraftConfirmUI(cardsPerPick) {
   if (btn) btn.disabled = draftSelectedCards.length < 1 || draftSelectedCards.length > maxPickable;
 }
 
-async function confirmDraftPickSingle(eventId, cardIds) {
+async function confirmDraftPickSingle(eventId, cardIds, cardData, targetColumn) {
   try {
     // Save remaining card IDs (current pack minus picked cards) BEFORE showing waiting
     var remainingIds = (window._lastPackIds || []).filter(function(id) {
@@ -1787,9 +1818,20 @@ async function confirmDraftPickSingle(eventId, cardIds) {
       body: JSON.stringify({ card_ids: cardIds })
     });
     if (result.draft_complete) {
+      _manualPlacements = {};
       showToast('轮抓完成！请构建你的牌组');
       navigate('event-detail', { id: eventId });
     } else {
+      // If dragged to a specific column, record manual placement after API success
+      // (before poll returns, so initDraftColumns respects user's column choice)
+      if (cardData && targetColumn) {
+        _manualPlacements[String(cardData.id)] = targetColumn;
+        if (_draftColumns) {
+          if (!_draftColumns[targetColumn]) _draftColumns[targetColumn] = [];
+          _draftColumns[targetColumn].push(cardData);
+          renderDraftColumns();
+        }
+      }
       // 不立即重渲染 —— 显示等待状态,等轮询把新包带回来
       window._draftWaiting = true;
       window._lastPackIds = remainingIds; // so poll knows the "old" remaining pack
@@ -1799,8 +1841,12 @@ async function confirmDraftPickSingle(eventId, cardIds) {
 }
 
 async function confirmDraftPick(eventId) {
+  // If cards were staged via drag-drop, use staged picks
+  if (_draftStagedPicks.length > 0) {
+    return confirmStagedDraftPick(eventId);
+  }
+  // Otherwise use click-based selection
   const cardsPerPick = (state.pageData && state.pageData._cardsPerPick) || 1;
-  // 允许少于 cardsPerPick —— 包里只剩奇数张时,最后一张可单独抓
   const currentPackLen = (() => {
     const c = document.getElementById('draft-cards-container');
     return c ? c.querySelectorAll('[data-card-id]').length : 0;
@@ -1842,17 +1888,34 @@ async function confirmDraftPick(eventId) {
 // 轮询 pollDraftState 会在新包到达时自动重新渲染
 function showDraftWaiting(eventId) {
   draftSelectedCards = [];
-  const container = document.getElementById('draft-cards-container');
-  const confirmBar = document.getElementById('draft-confirm-bar');
-  if (confirmBar) confirmBar.style.display = 'none';
-  if (container) {
-    container.innerHTML = `
-      <div class="empty-state" style="padding:40px 24px">
-        <div class="loading" style="margin:0 auto 16px"></div>
-        <p style="color:var(--warning);font-size:1rem">⏳ 等待其他玩家选牌后传牌...</p>
-        <p class="text-muted" style="font-size:0.85rem;margin-top:8px">新卡包到达后会自动显示</p>
-      </div>
-    `;
+  _draftStagedPicks = [];
+  // Keep pick strip visible but show waiting message inside
+  var pickStrip = document.getElementById('draft-pick-strip');
+  if (pickStrip) {
+    var cardsContainer = document.getElementById('draft-cards-container');
+    var confirmBar = document.getElementById('draft-confirm-bar');
+    if (cardsContainer) cardsContainer.style.display = 'none';
+    if (confirmBar) confirmBar.style.display = 'none';
+    var existingMsg = pickStrip.querySelector('.draft-waiting-msg');
+    if (!existingMsg) {
+      var msg = document.createElement('div');
+      msg.className = 'draft-waiting-msg';
+      msg.style.cssText = 'text-align:center;padding:2px 12px 6px;color:var(--warning);font-weight:600;font-size:0.9rem;min-height:168px;display:flex;flex-direction:column;align-items:center;justify-content:center';
+      msg.innerHTML = '等待其他玩家选牌...<div class="text-muted" style="font-weight:400;font-size:0.8rem;margin-top:4px">新卡包到达后会自动显示</div>';
+      pickStrip.appendChild(msg);
+    }
+  }
+}
+
+function showDraftPicking() {
+  var pickStrip = document.getElementById('draft-pick-strip');
+  if (pickStrip) {
+    var cardsContainer = document.getElementById('draft-cards-container');
+    var confirmBar = document.getElementById('draft-confirm-bar');
+    if (cardsContainer) cardsContainer.style.display = '';
+    if (confirmBar) confirmBar.style.display = '';
+    var msg = pickStrip.querySelector('.draft-waiting-msg');
+    if (msg) msg.remove();
   }
 }
 
@@ -1899,7 +1962,13 @@ async function pollDraftState(eventId) {
         window._lastPackIds = [];
       }
       // Update pool display
-      updateDraftPool(myParticipation);
+      // Only update columns if pool changed
+      var poolSize = (myParticipation.pool || []).length;
+      if (window._lastPoolSize == null || window._lastPoolSize !== poolSize) {
+        window._lastPoolSize = poolSize;
+        initDraftColumns(myParticipation.pool || []);
+        renderDraftColumns();
+      }
       return;
     }
 
@@ -1913,11 +1982,17 @@ async function pollDraftState(eventId) {
 
       if (isSameAsOld) {
         // Still the same old pack (remaining cards from our pick), keep waiting
-        updateDraftPool(myParticipation);
+        var poolSize2 = (myParticipation.pool || []).length;
+        if (window._lastPoolSize == null || window._lastPoolSize !== poolSize2) {
+          window._lastPoolSize = poolSize2;
+          initDraftColumns(myParticipation.pool || []);
+          renderDraftColumns();
+        }
         return;
       }
       // New pack arrived, clear waiting and render
       window._draftWaiting = false;
+      showDraftPicking();
     }
 
     // Normal polling: compare with last known pack IDs
@@ -1929,67 +2004,381 @@ async function pollDraftState(eventId) {
       window._lastPackIds = newIds;
       const cardsPerPick = (event.settings && event.settings.cards_per_pick) || 1;
       draftSelectedCards = [];
+      _draftStagedPicks = [];
       renderDraftCards(currentPack, cardsPerPick);
     }
 
-    // Update pool display
-    updateDraftPool(myParticipation);
+    // Only update columns if pool changed
+    var poolSize3 = (myParticipation.pool || []).length;
+    if (window._lastPoolSize == null || window._lastPoolSize !== poolSize3) {
+      window._lastPoolSize = poolSize3;
+      initDraftColumns(myParticipation.pool || []);
+      renderDraftColumns();
+    }
   } catch (err) {
     // Silently ignore poll errors to avoid UI disruption
   }
 }
 
-function updateDraftPool(myParticipation) {
-  const poolContainer = document.getElementById('event-pool-container');
-  if (!poolContainer) return;
-  const pool = myParticipation.pool || [];
-  if (pool.length === 0) {
-    poolContainer.innerHTML = '<div class="text-muted" style="text-align:center;padding:20px;font-size:0.85rem">还没有抓到牌</div>';
+// ============================================================
+// DRAFT COLUMNS SYSTEM (Two-panel redesign)
+// ============================================================
+var _draftColumns = null; // { '0': [], '1': [], ..., '6+': [], Land: [], Sideboard: [] }
+var _draftColumnKeys = ['0', '1', '2', '3', '4', '5', '6+', 'Land', 'Sideboard'];
+var _draftColumnNames = { '0': '0', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6+': '6+', 'Land': '地', 'Sideboard': '备牌' };
+
+function getDraftCardColumn(card) {
+  if (card.type && card.type.indexOf('Land') >= 0) return 'Land';
+  var cmc = getCardCMC(card);
+  if (cmc >= 6) return '6+';
+  return String(cmc);
+}
+
+function initDraftColumns(pool) {
+  // If we already have columns with cards, merge new pool cards into them
+  if (_draftColumns) {
+    var existingIds = {};
+    _draftColumnKeys.forEach(function(k) {
+      (_draftColumns[k] || []).forEach(function(c) { existingIds[c.id] = true; });
+    });
+    pool.forEach(function(card) {
+      if (!existingIds[card.id]) {
+        // Check if user manually placed this card in a specific column
+        var col = _manualPlacements[String(card.id)] || getDraftCardColumn(card);
+        if (!_draftColumns[col]) _draftColumns[col] = [];
+        _draftColumns[col].push(card);
+      }
+    });
     return;
   }
+  // Fresh init
+  _draftColumns = {};
+  _draftColumnKeys.forEach(function(k) { _draftColumns[k] = []; });
+  (pool || []).forEach(function(card) {
+    // Check if user manually placed this card in a specific column
+    var col = _manualPlacements[String(card.id)] || getDraftCardColumn(card);
+    _draftColumns[col].push(card);
+  });
+}
 
-  const groups = groupCardsByColor(pool);
-  poolContainer.innerHTML = Object.entries(groups).filter(([, cards]) => cards.length > 0).map(([color, cards]) => `
-    <div style="margin-bottom:10px">
-      <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:4px;font-weight:600">${COLOR_NAMES[color] || color} (${cards.length})</div>
-      <div class="pool-cards-compact pool-${color}" style="display:flex;flex-wrap:wrap;gap:3px"></div>
-    </div>
-  `).join('');
-  setTimeout(() => {
-    Object.entries(groups).filter(([, cards]) => cards.length > 0).forEach(([color, cards]) => {
-      const gridEl = poolContainer.querySelector(`.pool-${color}`);
-      if (gridEl) cards.forEach(card => {
-        const imgSrc = card.image_small || card.image;
-        if (imgSrc) {
-          const img = document.createElement('img');
-          img.src = imgSrc;
-          img.alt = card.name || '';
-          img.title = card.name || '';
-          img.loading = 'lazy';
-          img.style.cssText = 'width:48px;height:67px;object-fit:cover;border-radius:3px;border:1px solid rgba(255,255,255,0.1);cursor:pointer;transition:transform 0.15s,box-shadow 0.15s';
-          img.onmouseenter = function(e) {
-            this.style.transform='scale(1.1)'; this.style.boxShadow='0 2px 8px rgba(0,0,0,0.5)'; this.style.zIndex='10'; this.style.position='relative';
-            showCardPreview(card, e); moveCardPreview(e);
-          };
-          img.onmousemove = function(e) { moveCardPreview(e); };
-          img.onmouseleave = function() {
-            this.style.transform=''; this.style.boxShadow=''; this.style.zIndex=''; this.style.position='';
-            hideCardPreview();
-          };
-          gridEl.appendChild(img);
-        } else {
-          const el = document.createElement('div');
-          el.textContent = card.name || '?';
-          el.style.cssText = 'width:48px;height:67px;background:var(--bg-darkest);border-radius:3px;border:1px solid rgba(255,255,255,0.1);display:flex;align-items:center;justify-content:center;font-size:0.5rem;color:var(--text-muted);text-align:center;padding:2px;overflow:hidden;cursor:pointer';
-          el.title = card.name || '';
-          el.onmouseenter = function(e) { showCardPreview(card, e); moveCardPreview(e); };
-          el.onmousemove = function(e) { moveCardPreview(e); };
-          el.onmouseleave = function() { hideCardPreview(); };
-          gridEl.appendChild(el);
+function renderDraftColumns() {
+  var scrollEl = document.getElementById('draft-columns-scroll');
+  if (!scrollEl || !_draftColumns) return;
+  scrollEl.innerHTML = '';
+
+  // Dynamic card overlap: adjusts so all cards fit in the tallest column
+  var maxCards = 0;
+  _draftColumnKeys.forEach(function(k) {
+    var len = (_draftColumns[k] || []).length;
+    if (len > maxCards) maxCards = len;
+  });
+  var colCount = _draftColumnKeys.length || 9;
+  var colWidth = Math.max(110, scrollEl.clientWidth / colCount);
+  var cardH = colWidth * 7 / 5;
+  var cardOverlap = 0;
+  if (maxCards > 1) {
+    var availableH = scrollEl.clientHeight || 500;
+    var neededOverlap = (cardH * maxCards - availableH) / (maxCards - 1);
+    cardOverlap = Math.max(0, Math.min(cardH * 0.82, neededOverlap));
+  }
+
+  _draftColumnKeys.forEach(function(key) {
+    var cards = _draftColumns[key] || [];
+    var colEl = document.createElement('div');
+    colEl.className = 'draft-column' + (key === 'Sideboard' ? ' sideboard' : '');
+    colEl.setAttribute('data-column', key);
+
+    // Header
+    var header = document.createElement('div');
+    header.className = 'draft-column-header';
+    header.innerHTML = '<span>' + (_draftColumnNames[key] || key) + '</span><span class="draft-column-count">' + cards.length + '</span>';
+    colEl.appendChild(header);
+
+    // Body (cards)
+    var body = document.createElement('div');
+    body.className = 'draft-column-body';
+    body.setAttribute('data-column', key);
+
+    if (cards.length === 0) {
+      body.innerHTML = '<div class="draft-column-empty">拖拽卡牌到此列</div>';
+    } else {
+      // Group cards by name within this column
+      var groups = [];
+      var groupMap = {};
+      cards.forEach(function(card) {
+        var nameKey = card.name || String(card.id);
+        if (!groupMap[nameKey]) {
+          groupMap[nameKey] = [];
+          groups.push({ name: nameKey, cards: [] });
         }
+        groupMap[nameKey].push(card);
+        groups[groups.length - 1].cards = groupMap[nameKey];
       });
+
+      groups.forEach(function(group, groupIdx) {
+        var card = group.cards[0]; // representative card for display
+        var count = group.cards.length;
+
+        var cardEl = document.createElement('div');
+        cardEl.className = 'draft-column-card';
+        cardEl.setAttribute('draggable', 'true');
+        cardEl.setAttribute('data-card-id', card.id);
+        cardEl.setAttribute('data-column', key);
+        cardEl.style.zIndex = groupIdx + 1;
+        if (groupIdx < groups.length - 1) {
+          cardEl.style.marginBottom = -cardOverlap + 'px';
+        }
+
+        var imgSrc = card.image_small || card.image;
+        if (imgSrc) {
+          cardEl.innerHTML = '<img src="' + imgSrc + '" alt="' + (card.name || '') + '" loading="lazy">';
+        } else {
+          cardEl.innerHTML = '<div style="width:100%;aspect-ratio:5/7;background:var(--bg-mid);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.6rem;color:var(--text-muted);text-align:center;padding:4px">' + (card.name || '?') + '</div>';
+        }
+
+        // Count badge for stacked identical cards
+        if (count > 1) {
+          var badge = document.createElement('div');
+          badge.className = 'draft-col-card-count';
+          badge.textContent = 'x' + count;
+          cardEl.appendChild(badge);
+        }
+
+        // Name label at bottom of visible portion
+        var nameLabel = document.createElement('div');
+        nameLabel.className = 'draft-col-card-name';
+        nameLabel.textContent = card.name || '';
+        cardEl.appendChild(nameLabel);
+
+        // Hover preview
+        cardEl.addEventListener('mouseenter', function(e) { showCardPreview(card, e); moveCardPreview(e); });
+        cardEl.addEventListener('mousemove', function(e) { moveCardPreview(e); });
+        cardEl.addEventListener('mouseleave', function() { hideCardPreview(); });
+
+        // Drag start — only drags one card from the stack
+        cardEl.addEventListener('dragstart', function(e) {
+          e.dataTransfer.setData('text/plain', JSON.stringify({ cardId: card.id, fromColumn: key }));
+          e.dataTransfer.effectAllowed = 'move';
+          cardEl.classList.add('dragging');
+          setTimeout(function() { cardEl.style.opacity = '0.4'; }, 0);
+        });
+        cardEl.addEventListener('dragend', function() {
+          cardEl.classList.remove('dragging');
+          cardEl.style.opacity = '';
+          document.querySelectorAll('.draft-column.drag-over').forEach(function(el) { el.classList.remove('drag-over'); });
+        });
+
+        body.appendChild(cardEl);
+      });
+    }
+
+    // Drop target
+    body.addEventListener('dragover', function(e) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      colEl.classList.add('drag-over');
     });
-  }, 0);
+    body.addEventListener('dragleave', function(e) {
+      if (!body.contains(e.relatedTarget)) {
+        colEl.classList.remove('drag-over');
+      }
+    });
+    body.addEventListener('drop', function(e) {
+      e.preventDefault();
+      colEl.classList.remove('drag-over');
+      try {
+        var data = JSON.parse(e.dataTransfer.getData('text/plain'));
+        if (data.source === 'pick') {
+          // Card dragged from pick strip
+          var pickContainer = document.getElementById('draft-cards-container');
+          var allCards = pickContainer ? Array.from(pickContainer.querySelectorAll('[data-card-id]')) : [];
+          var cardData = null;
+          allCards.forEach(function(cEl) {
+            if (String(cEl.getAttribute('data-card-id')) === String(data.cardId)) {
+              // Find the card object from window._lastPackIds or current pack
+            }
+          });
+          // Get card object from the current pack (stored in a global for convenience)
+          cardData = window._currentDraftPack ? window._currentDraftPack.find(function(c) {
+            return String(c.id) === String(data.cardId);
+          }) : null;
+          if (cardData) {
+            var cardsPerPick = (state.pageData && state.pageData._cardsPerPick) || 1;
+            if (cardsPerPick <= 1) {
+              // Single pick: immediately confirm, pass card data + target column for manual placement
+              confirmDraftPickSingle(state.pageData.id || state.pageData, [data.cardId], cardData, key);
+            } else {
+              // Multi-pick: stage the card
+              stageDraftPick(cardData, key);
+            }
+          }
+        } else if (data.fromColumn) {
+          // Column-to-column move
+          handleDraftColumnDrop(data.cardId, data.fromColumn, key);
+        }
+      } catch (err) { /* ignore bad drops */ }
+    });
+
+    colEl.appendChild(body);
+    scrollEl.appendChild(colEl);
+  });
+
+  // Update pool count
+  var countEl = document.getElementById('draft-pool-count');
+  if (countEl) {
+    var total = 0;
+    _draftColumnKeys.forEach(function(k) { total += (_draftColumns[k] || []).length; });
+    countEl.textContent = total + '张';
+  }
+}
+
+function handleDraftColumnDrop(cardId, fromColumn, toColumn) {
+  if (fromColumn === toColumn) return;
+  if (!_draftColumns) return;
+  var fromArr = _draftColumns[fromColumn] || [];
+  var cardIdx = -1;
+  for (var i = 0; i < fromArr.length; i++) {
+    if (String(fromArr[i].id) === String(cardId)) { cardIdx = i; break; }
+  }
+  if (cardIdx < 0) return;
+  var card = fromArr.splice(cardIdx, 1)[0];
+  if (!_draftColumns[toColumn]) _draftColumns[toColumn] = [];
+  _draftColumns[toColumn].push(card);
+  renderDraftColumns();
+}
+
+function stageDraftPick(card, targetColumn) {
+  // Don't stage if already staged
+  if (_draftStagedPicks.some(function(s) { return String(s.id) === String(card.id); })) return;
+  var cardsPerPick = (state.pageData && state.pageData._cardsPerPick) || 1;
+  if (_draftStagedPicks.length >= cardsPerPick) return; // already at max
+
+  _draftStagedPicks.push({ card: card, column: targetColumn });
+
+  // Add card to target column visually
+  if (_draftColumns) {
+    if (!_draftColumns[targetColumn]) _draftColumns[targetColumn] = [];
+    _draftColumns[targetColumn].push(card);
+    renderDraftColumns();
+  }
+
+  // Re-render pick strip to show staged state
+  var currentPack = window._currentDraftPack || [];
+  renderDraftCards(currentPack, cardsPerPick);
+
+  // Update confirm UI
+  updateStagedConfirmUI();
+
+  // If we've staged enough cards, auto-confirm
+  if (_draftStagedPicks.length >= cardsPerPick) {
+    var confirmBtn = document.getElementById('draft-confirm-btn');
+    if (confirmBtn) {
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = '确认选择 (' + _draftStagedPicks.length + '/' + cardsPerPick + ')';
+    }
+  }
+}
+
+function updateStagedConfirmUI() {
+  var cardsPerPick = (state.pageData && state.pageData._cardsPerPick) || 1;
+  var countEl = document.getElementById('draft-selected-count');
+  var btn = document.getElementById('draft-confirm-btn');
+  if (countEl) countEl.textContent = '已选: ' + _draftStagedPicks.length + ' / ' + cardsPerPick;
+  if (btn) btn.disabled = _draftStagedPicks.length < 1 || _draftStagedPicks.length > cardsPerPick;
+}
+
+async function confirmStagedDraftPick(eventId) {
+  if (_draftStagedPicks.length < 1) {
+    showToast('请先将卡牌拖到下方列中', 'error');
+    return;
+  }
+  var cardsPerPick = (state.pageData && state.pageData._cardsPerPick) || 1;
+  if (_draftStagedPicks.length > cardsPerPick) {
+    showToast('已选卡牌过多', 'error');
+    return;
+  }
+  var cardIds = _draftStagedPicks.map(function(s) { return s.card.id; });
+  var confirmBtn = document.getElementById('draft-confirm-btn');
+  if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = '确认中...'; }
+
+  try {
+    var remainingIds = (window._lastPackIds || []).filter(function(id) {
+      return cardIds.indexOf(id) === -1 && cardIds.indexOf(Number(id)) === -1 && cardIds.indexOf(String(id)) === -1;
+    });
+    var result = await api('/api/events/' + eventId + '/pick', {
+      method: 'POST',
+      body: JSON.stringify({ card_ids: cardIds })
+    });
+
+    // Remove staged cards from columns (they'll be re-added via pool update)
+    _draftStagedPicks.forEach(function(s) {
+      // Record manual placement so initDraftColumns respects user's column choice
+      _manualPlacements[String(s.card.id)] = s.column;
+      var col = _draftColumns[s.column];
+      if (col) {
+        for (var i = col.length - 1; i >= 0; i--) {
+          if (String(col[i].id) === String(s.card.id)) { col.splice(i, 1); break; }
+        }
+      }
+    });
+    _draftStagedPicks = [];
+
+    if (result.draft_complete) {
+      _manualPlacements = {};
+      showToast('轮抓完成！请构建你的牌组');
+      navigate('event-detail', { id: eventId });
+    } else {
+      window._draftWaiting = true;
+      window._lastPackIds = remainingIds;
+      showDraftWaiting(eventId);
+    }
+  } catch (err) {
+    showToast(err.message, 'error');
+    if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = '确认选择'; }
+  }
+}
+
+async function autoCreateDeckFromDraft(eventId, pool) {
+  // Gather cards from columns: everything except Sideboard → main deck; Sideboard → sideboard
+  var mainDeck = [];
+  var sideboard = [];
+  if (_draftColumns) {
+    _draftColumnKeys.forEach(function(k) {
+      if (k === 'Sideboard') {
+        sideboard = sideboard.concat(_draftColumns[k] || []);
+      } else {
+        mainDeck = mainDeck.concat(_draftColumns[k] || []);
+      }
+    });
+  } else {
+    // Fallback: all pool goes to main deck
+    mainDeck = pool.slice();
+  }
+
+  if (mainDeck.length === 0 && sideboard.length === 0) return;
+
+  try {
+    var deckName = '轮抓牌组 #' + eventId;
+    var body = {
+      name: deckName,
+      main_deck: mainDeck,
+      sideboard: sideboard,
+      event_id: eventId
+    };
+    var deck = await api('/api/decks', { method: 'POST', body: JSON.stringify(body) });
+    showToast('牌组已自动创建: ' + deckName);
+    // Update the banner
+    var banner = document.getElementById('draft-complete-banner');
+    if (banner) {
+      banner.innerHTML = '轮抓已结束 — <a href="#/decks/' + deck.id + '/build" style="color:var(--success);text-decoration:underline">编辑牌组</a>';
+    }
+    // Refresh the page to show deck section
+    setTimeout(function() { navigate('event-detail', { id: eventId }); }, 1500);
+  } catch (err) {
+    showToast('自动创建牌组失败: ' + err.message, 'error');
+    var banner = document.getElementById('draft-complete-banner');
+    if (banner) banner.textContent = '轮抓已结束 — 自动创建牌组失败，请手动构建';
+  }
 }
 
 // ============================================================
