@@ -543,17 +543,6 @@ ensureColumn('decks', 'outside_game', "outside_game TEXT DEFAULT '[]'");
 // Middleware
 // ============================================================
 app.set('trust proxy', true);
-app.use((req, res, next) => {
-  const proto = req.headers['x-forwarded-proto'];
-  const realScheme = req.headers['x-real-scheme'];
-  const scheme = req.headers['x-scheme'];
-  const isSecure = proto === 'https' || realScheme === 'https' || scheme === 'https' || req.secure;
-  const isLocal = req.hostname === 'localhost' || req.hostname === '127.0.0.1';
-  if (!isSecure && !isLocal) {
-    return res.redirect(301, `https://${req.hostname}${req.url}`);
-  }
-  next();
-});
 app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
