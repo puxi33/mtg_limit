@@ -1440,7 +1440,16 @@ app.get('/api/events/:id', authMiddleware, (req, res) => {
   if (myParticipation) {
     let packData = JSON.parse(myParticipation.current_packs || '{}');
     if (Array.isArray(packData)) {
-      packData = { current: packData[0] || [], queue: packData.slice(1), pending: null };
+      packData = { current: packData[0] || [], queue: packData.slice(1), pending_queue: [] };
+    } else {
+      // Normalize: convert old pending to pending_queue
+      if (!packData.pending_queue) {
+        if (packData.pending && Array.isArray(packData.pending) && packData.pending.length > 0) {
+          packData.pending_queue = [packData.pending];
+        } else {
+          packData.pending_queue = [];
+        }
+      }
     }
     event.my_participation = {
       ...myParticipation,
@@ -1658,7 +1667,7 @@ app.post('/api/events/:id/start', authMiddleware, async (req, res) => {
         const packData = {
           current: playerPacks[0] || [],
           queue: playerPacks.slice(1),
-          pending: null
+          pending_queue: []
         };
         const isBot = participants[i].status === 'bot';
         const newStatus = isBot ? 'bot' : 'drafting';
@@ -1701,61 +1710,75 @@ app.post('/api/events/:id/start', authMiddleware, async (req, res) => {
 });
 
 app.post('/api/events/:id/pick', authMiddleware, (req, res) => {
-  try {
-    const { card_ids } = req.body;
-    if (!card_ids || !Array.isArray(card_ids) || card_ids.length === 0) {
-      return res.status(400).json({ error: '请选择至少一张卡牌' });
-    }
+  const { card_ids } = req.body;
+  if (!card_ids || !Array.isArray(card_ids) || card_ids.length === 0) {
+    return res.status(400).json({ error: '请选择至少一张卡牌' });
+  }
+
+  // Wrap entire pick operation in a SQLite transaction to prevent race conditions
+  const doPick = db.transaction(() => {
     const event = db.prepare('SELECT * FROM events WHERE id = ?').get(req.params.id);
-    if (!event || event.status !== 'in_progress') return res.status(400).json({ error: '事件不在进行中' });
+    if (!event || event.status !== 'in_progress') throw new Error('事件不在进行中');
     const settings = JSON.parse(event.settings);
     const cardsPerPick = settings.cards_per_pick || 1;
 
     const participants = db.prepare('SELECT * FROM participants WHERE event_id = ? ORDER BY seat_number').all(req.params.id);
     const myIndex = participants.findIndex(p => p.user_id === req.user.id);
-    if (myIndex === -1) return res.status(400).json({ error: '你不是参与者' });
+    if (myIndex === -1) throw new Error('你不是参与者');
     const N = participants.length;
     const botUserId = getBotUserId();
 
-    // Parse all participants' pack data
+    // Parse all participants' pack data with backward compatibility
+    // Old format: { current, queue, pending (single array or null) }
+    // New format: { current, queue, pending_queue (array of arrays) }
     const allPacks = participants.map(p => {
       const pd = JSON.parse(p.current_packs || '{}');
+      let current, queue, pendingQueue;
       if (Array.isArray(pd)) {
-        return { current: pd[0] || [], queue: pd.slice(1), pending: null };
+        current = pd[0] || [];
+        queue = pd.slice(1);
+        pendingQueue = [];
+      } else {
+        current = pd.current || [];
+        queue = pd.queue || [];
+        // Backward compatibility: convert old pending to pending_queue
+        if (pd.pending_queue) {
+          pendingQueue = pd.pending_queue;
+        } else if (pd.pending && Array.isArray(pd.pending) && pd.pending.length > 0) {
+          pendingQueue = [pd.pending];
+        } else {
+          pendingQueue = [];
+        }
       }
-      return { current: pd.current || [], queue: pd.queue || [], pending: pd.pending || null };
+      return { current, queue, pending_queue: pendingQueue };
     });
     const allPools = participants.map(p => JSON.parse(p.pool || '[]'));
     const allPicks = participants.map(p => JSON.parse(p.picks || '[]'));
     const allBotStates = participants.map(p => JSON.parse(p.bot_state || '{}'));
 
-    // 允许少于 cardsPerPick —— 当包里只剩奇数张时最后一张也允许单独抓
-    // 比如 15 张包、cards_per_pick=2:每轮抓2,最后一轮(剩1张)只能抓1张
+    // Allow fewer than cardsPerPick when the pack has fewer cards remaining
     const myCurrentPackLen = allPacks[myIndex].current.length;
     const maxPickable = Math.min(cardsPerPick, Math.max(1, myCurrentPackLen));
     if (card_ids.length > maxPickable) {
-      return res.status(400).json({ error: `当前包最多可选 ${maxPickable} 张卡牌` });
+      throw new Error(`当前包最多可选 ${maxPickable} 张卡牌`);
     }
 
     // Determine current pack number for direction
-    // packNumber = packs_per_player - queue.length (since queue holds remaining packs after current)
     const myPackNumber = settings.packs_per_player - allPacks[myIndex].queue.length;
     const direction = myPackNumber % 2 === 1 ? 1 : -1;
 
     // === Round-tracking: who has picked since the last pass? ===
-    // A player may only pick once per round. The round ends when every participant
-    // has picked (or is a bot that auto-picked). When the round ends, we pass packs.
     let picksThisRound = JSON.parse(event.picks_this_round || '[]');
     const myParticipantId = participants[myIndex].id;
     if (picksThisRound.includes(myParticipantId)) {
-      return res.status(400).json({ error: '本轮你已经选过牌了，请等待其他玩家传牌' });
+      throw new Error('本轮你已经选过牌了，请等待其他玩家传牌');
     }
 
     // Phase 1: Human picks from their current pack
     const pickedCards = [];
     for (const cid of card_ids) {
       const idx = allPacks[myIndex].current.findIndex(c => c.id === cid);
-      if (idx === -1) return res.status(400).json({ error: '卡牌不在当前卡包中' });
+      if (idx === -1) throw new Error('卡牌不在当前卡包中');
       pickedCards.push(allPacks[myIndex].current.splice(idx, 1)[0]);
     }
     allPools[myIndex].push(...pickedCards);
@@ -1763,7 +1786,7 @@ app.post('/api/events/:id/pick', authMiddleware, (req, res) => {
     picksThisRound.push(myParticipantId);
 
     // Phase 2: Bots pick from their current pack (auto-picked this round)
-    const botPickThisRound = [];  // participant ids of bots that actually picked
+    const botPickThisRound = [];
     for (let i = 0; i < N; i++) {
       if (i === myIndex) continue;
       const isBot = participants[i].user_id === botUserId || participants[i].status === 'bot';
@@ -1789,10 +1812,6 @@ app.post('/api/events/:id/pick', authMiddleware, (req, res) => {
     }
 
     // Decide whether the round ends (and packs pass) or we wait for more players.
-    // Round ends only if every participant has picked since the last pass.
-    // If some humans haven't picked yet, hold off on passing — they need to take
-    // their turn before packs can circulate. (Bots always pick instantly, so a
-    // round with 1 human + N-1 bots always completes in one API call.)
     const allHumanIds = participants.filter(p => p.user_id !== botUserId).map(p => p.id);
     const allHumansPicked = allHumanIds.every(id => picksThisRound.includes(id));
     const allBotsPicked = participants
@@ -1807,8 +1826,7 @@ app.post('/api/events/:id/pick', authMiddleware, (req, res) => {
     // Phase 3 + 4 only run when the round is complete
     if (roundComplete) {
       // Phase 3: Pass packs ONLY from participants who picked this round.
-      // Players who haven't picked yet (shouldn't happen at this point, but defensive)
-      // do not pass their pack — their pack stays put.
+      // Incoming packs are NEVER dropped - they go to pending_queue if current is occupied.
       const newIncoming = new Array(N).fill(null);
       for (let i = 0; i < N; i++) {
         if (!picksThisRound.includes(participants[i].id)) continue;
@@ -1821,34 +1839,36 @@ app.post('/api/events/:id/pick', authMiddleware, (req, res) => {
         if (newIncoming[i] !== null) {
           if (allPacks[i].current.length === 0) {
             allPacks[i].current = newIncoming[i];
-          } else if (!Array.isArray(allPacks[i].pending) || allPacks[i].pending.length === 0) {
-            allPacks[i].pending = newIncoming[i];
+          } else {
+            // Never drop packs - queue into pending_queue
+            allPacks[i].pending_queue.push(newIncoming[i]);
           }
-          // else: drop incoming
         }
       }
 
-      // Phase 4: Promote pending first; only open queue (player's own next pack)
-      // when the WHOLE cycle is done (no current or pending cards anywhere).
-      const cycleDone = allPacks.every(p => p.current.length === 0 && (!Array.isArray(p.pending) || p.pending.length === 0));
+      // Phase 4: Promote from pending_queue first; only open queue (player's own next pack)
+      // when the WHOLE cycle is done (no current, no pending_queue cards anywhere).
+      // First, promote from pending_queue where current is empty
+      for (let i = 0; i < N; i++) {
+        if (allPacks[i].current.length === 0 && allPacks[i].pending_queue.length > 0) {
+          allPacks[i].current = allPacks[i].pending_queue.shift();
+        }
+      }
+      // Then check if the whole cycle is done - if so, open next pack from queue
+      const cycleDone = allPacks.every(p =>
+        p.current.length === 0 &&
+        (!p.pending_queue || p.pending_queue.length === 0)
+      );
       if (cycleDone) {
         for (let i = 0; i < N; i++) {
           if (allPacks[i].current.length === 0 && allPacks[i].queue.length > 0) {
             allPacks[i].current = allPacks[i].queue.shift();
           }
         }
-      } else {
-        for (let i = 0; i < N; i++) {
-          if (allPacks[i].current.length === 0 &&
-              Array.isArray(allPacks[i].pending) && allPacks[i].pending.length > 0) {
-            allPacks[i].current = allPacks[i].pending;
-            allPacks[i].pending = [];
-          }
-        }
       }
     }
 
-    // Phase 5: Save all participants
+    // Phase 5: Save all participants atomically (within the transaction)
     const updateStmt = db.prepare('UPDATE participants SET current_packs = ?, pool = ?, picks = ?, bot_state = ? WHERE id = ?');
     for (let i = 0; i < N; i++) {
       updateStmt.run(
@@ -1867,8 +1887,25 @@ app.post('/api/events/:id/pick', authMiddleware, (req, res) => {
       db.prepare('UPDATE events SET picks_this_round = ? WHERE id = ?').run(JSON.stringify(picksThisRound), req.params.id);
     }
 
-    // Phase 6: Check completion
-    const allDone = allPacks.every(p => p.current.length === 0 && p.queue.length === 0);
+    // Validation: all players should have the same total card count
+    // total = pool.length + current.length + sum of all pending_queue cards + sum of all queue cards
+    const totals = allPacks.map((p, i) => {
+      const pendingCards = (p.pending_queue || []).reduce((sum, pk) => sum + pk.length, 0);
+      const queueCards = p.queue.reduce((sum, pk) => sum + pk.length, 0);
+      return allPools[i].length + p.current.length + pendingCards + queueCards;
+    });
+    const expectedTotal = totals[0];
+    const countMismatch = totals.some(t => t !== expectedTotal);
+    if (countMismatch) {
+      console.error('[DRAFT VALIDATION] Card count mismatch!', totals.map((t, i) => `seat${i}: ${t}`).join(', '));
+    }
+
+    // Phase 6: Check completion - must check current, queue, AND pending_queue
+    const allDone = allPacks.every(p =>
+      p.current.length === 0 &&
+      p.queue.length === 0 &&
+      (!p.pending_queue || p.pending_queue.length === 0)
+    );
     if (allDone) {
       db.prepare('UPDATE events SET status = ? WHERE id = ?').run('completed', req.params.id);
     }
@@ -1879,7 +1916,7 @@ app.post('/api/events/:id/pick', authMiddleware, (req, res) => {
       .filter(p => allPacks[participants.findIndex(x => x.id === p.id)].current.length > 0)
       .map(p => p.id);
 
-    res.json({
+    return {
       picked_cards: pickedCards,
       current_pack: allPacks[myIndex].current,
       remaining_packs: allPacks[myIndex].queue.length,
@@ -1887,14 +1924,26 @@ app.post('/api/events/:id/pick', authMiddleware, (req, res) => {
       draft_complete: allDone,
       round_complete: roundComplete,
       waiting_for: waitingFor,
-      pending: allPacks[myIndex].pending || [],
+      pending_queue: allPacks[myIndex].pending_queue,
       max_pickable: maxPickable,
-      cards_per_pick: cardsPerPick
-    });
+      cards_per_pick: cardsPerPick,
+      card_counts: { totals, mismatch: countMismatch }
+    };
+  });
+
+  try {
+    const result = doPick();
+    res.json(result);
     wsBroadcast(`event:${req.params.id}`, 'draft_updated', { eventId: parseInt(req.params.id) });
   } catch (err) {
     console.error('Pick error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(err.message && (
+      err.message.includes('事件不在进行中') ||
+      err.message.includes('你不是参与者') ||
+      err.message.includes('当前包最多可选') ||
+      err.message.includes('本轮你已经选过牌了') ||
+      err.message.includes('卡牌不在当前卡包中')
+    ) ? 400 : 500).json({ error: err.message });
   }
 });
 
@@ -1902,6 +1951,32 @@ app.get('/api/events/:id/pool', authMiddleware, (req, res) => {
   const participant = db.prepare('SELECT * FROM participants WHERE event_id = ? AND user_id = ?').get(req.params.id, req.user.id);
   if (!participant) return res.status(404).json({ error: '你不是参与者' });
   res.json({ pool: JSON.parse(participant.pool || '[]'), picks: JSON.parse(participant.picks || '[]') });
+});
+
+app.get('/api/events/:id/draft-state', authMiddleware, (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: '需要管理员权限' });
+  const event = db.prepare('SELECT * FROM events WHERE id = ?').get(req.params.id);
+  if (!event) return res.status(404);
+  const participants = db.prepare('SELECT * FROM participants WHERE event_id = ? ORDER BY seat_number').all(req.params.id);
+  const state = participants.map(p => {
+    const packs = JSON.parse(p.current_packs || '{}');
+    const pool = JSON.parse(p.pool || '[]');
+    const pendingCards = (packs.pending_queue || []).reduce((s, pk) => s + pk.length, 0);
+    const queueCards = (packs.queue || []).reduce((s, pk) => s + pk.length, 0);
+    return {
+      seat: p.seat_number,
+      username: p.user_id,
+      status: p.status,
+      pool_size: pool.length,
+      current_size: (packs.current || []).length,
+      pending_packs: (packs.pending_queue || []).length,
+      pending_cards: pendingCards,
+      queue_packs: (packs.queue || []).length,
+      queue_cards: queueCards,
+      total: pool.length + (packs.current || []).length + pendingCards + queueCards
+    };
+  });
+  res.json({ event: { id: event.id, status: event.status, picks_this_round: JSON.parse(event.picks_this_round || '[]') }, participants: state });
 });
 
 // ============================================================
