@@ -1334,12 +1334,32 @@ async function renderEventDetail(el, id) {
 
     // Tournament state
     const currentMaxRound = (eventBattles || []).reduce((max, b) => Math.max(max, b.round || 1), 0);
+    const allBattlesDone = (eventBattles || []).length > 0 && (eventBattles || []).every(b => b.status === 'completed');
     const currentRoundBattles = (eventBattles || []).filter(b => (b.round || 1) === currentMaxRound);
-    const allCurrentRoundDone = currentMaxRound > 0 && currentRoundBattles.length > 0 && currentRoundBattles.every(b => b.status === 'completed');
-    const myEliminated = (eventBattles || []).some(b =>
-      b.status === 'completed' && b.winner_id && b.winner_id !== state.user?.id &&
-      (b.player1_id === state.user?.id || b.player2_id === state.user?.id)
-    );
+    const allBattlesCompleted = (eventBattles || []).length > 0 && (eventBattles || []).every(b => b.status === 'completed');
+    // Double elimination: eliminated only if lost a losers-bracket or finals match and no active battles
+    const myEliminated = (() => {
+      const uid = state.user?.id;
+      if (!uid) return false;
+      const hasActiveBattle = (eventBattles || []).some(b =>
+        (b.status === 'in_progress' || b.status === 'waiting') &&
+        (b.player1_id === uid || b.player2_id === uid)
+      );
+      if (hasActiveBattle) return false;
+      const lostEliminatingBattle = (eventBattles || []).some(b =>
+        b.status === 'completed' && b.winner_id && b.winner_id !== uid &&
+        (b.player1_id === uid || b.player2_id === uid) &&
+        (b.bracket === 'losers' || b.bracket === 'finals')
+      );
+      // Also eliminated if lost first round and there are already losers bracket battles done (they missed it)
+      // But simpler: not in any pending battle and tournament still going = effectively eliminated
+      if (!lostEliminatingBattle) {
+        // Check if there's a next round they should be in
+        const anyIncompleteBattle = (eventBattles || []).some(b => b.status !== 'completed');
+        if (!anyIncompleteBattle) return true; // all battles done and I'm not in next round
+      }
+      return lostEliminatingBattle;
+    })();
 
     el.innerHTML = `
       <div class="page-header">
@@ -1448,14 +1468,14 @@ async function renderEventDetail(el, id) {
         <!-- Tournament Controls (owner only) -->
         ${isOwner && (eventBattles || []).length === 0 && myDeck ? `
           <div style="margin-bottom:24px;padding:16px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);text-align:center">
-            <h3 style="color:var(--text-bright);margin-bottom:8px">淘汰赛配对</h3>
-            <p class="text-muted" style="margin-bottom:12px">所有玩家构建完牌组后，点击自动配对开始第一轮</p>
+            <h3 style="color:var(--text-bright);margin-bottom:8px">双败淘汰配对</h3>
+            <p class="text-muted" style="margin-bottom:12px">所有玩家构建完牌组后，点击自动配对开始第一轮（胜者组+败者组双败淘汰制）</p>
             <button class="btn btn-primary" onclick="autoPairEvent(${id})">自动配对</button>
           </div>
-        ` : isOwner && allCurrentRoundDone ? `
+        ` : isOwner && allBattlesCompleted ? `
           <div style="margin-bottom:24px;padding:16px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);text-align:center">
-            <h3 style="color:var(--text-bright);margin-bottom:8px">第${currentMaxRound}轮已全部结束</h3>
-            <p class="text-muted" style="margin-bottom:12px">点击配对下一轮对战</p>
+            <h3 style="color:var(--text-bright);margin-bottom:8px">所有对战已结束</h3>
+            <p class="text-muted" style="margin-bottom:12px">点击配对下一轮（胜者组/败者组/总决赛自动推进）</p>
             <button class="btn btn-primary" onclick="nextRoundEvent(${id})">配对下一轮</button>
           </div>
         ` : ''}
@@ -1469,23 +1489,34 @@ async function renderEventDetail(el, id) {
         </div>
       ` : ''}
 
-      <!-- Event Battles (grouped by round) -->
+      <!-- Event Battles (grouped by round, with bracket labels) -->
       ${(eventBattles || []).length > 0 ? `
         <div style="margin-bottom:24px">
-          <h3 style="color:var(--text-bright);margin-bottom:12px">淘汰赛</h3>
+          <h3 style="color:var(--text-bright);margin-bottom:12px">双败淘汰赛</h3>
           ${[...new Set((eventBattles || []).map(b => b.round || 1))].sort((a, b) => a - b).map(round => {
             const roundBattles = (eventBattles || []).filter(b => (b.round || 1) === round);
             const roundDone = roundBattles.every(b => b.status === 'completed');
+            const hasWinners = roundBattles.some(b => b.bracket === 'winners');
+            const hasLosers = roundBattles.some(b => b.bracket === 'losers');
+            const hasFinals = roundBattles.some(b => b.bracket === 'finals');
+            const bracketLabel = hasFinals ? '🏆 总决赛' : (hasWinners && hasLosers ? '胜者组 + 败者组' : hasLosers ? '败者组' : '胜者组');
+            const bracketBadgeColor = hasFinals ? '#d4a043' : (hasLosers ? '#e74c3c' : '#3498db');
             return `
               <div style="margin-bottom:16px">
                 <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
                   <span style="color:var(--text-bright);font-weight:600;font-size:0.95rem">第${round}轮</span>
+                  <span class="badge" style="background:${bracketBadgeColor};color:#fff;font-size:0.7rem">${bracketLabel}</span>
                   <span class="badge badge-${roundDone ? 'completed' : 'progress'}">${roundDone ? '已结束' : '进行中'}</span>
                 </div>
                 <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">
-                  ${roundBattles.map(b => `
+                  ${roundBattles.map(b => {
+                    const bBracket = b.bracket || 'winners';
+                    const bBracketLabel = bBracket === 'finals' ? '🏆' : (bBracket === 'losers' ? 'LB' : 'WB');
+                    const bBracketColor = bBracket === 'finals' ? '#d4a043' : (bBracket === 'losers' ? '#e74c3c' : '#3498db');
+                    return `
                     <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
-                      <div>
+                      <div style="display:flex;align-items:center;gap:6px">
+                        <span class="badge" style="background:${bBracketColor};color:#fff;font-size:0.6rem;padding:2px 6px">${bBracketLabel}</span>
                         <strong style="color:${b.status === 'completed' && b.winner_id === b.player1_id ? 'var(--success)' : 'var(--text-bright)'}">${b.player1_name || '?'}</strong>
                         <span class="text-muted" style="margin:0 6px">vs</span>
                         <strong style="color:${b.status === 'completed' && b.winner_id === b.player2_id ? 'var(--success)' : 'var(--text-bright)'}">${b.player2_name || '?'}</strong>
@@ -1499,8 +1530,8 @@ async function renderEventDetail(el, id) {
                         </span>
                         ${(b.player1_id === state.user?.id || b.player2_id === state.user?.id) ? `<button class="btn btn-secondary btn-sm" onclick="openBattle(${b.id})">${b.status === 'completed' ? '查看' : '进入'}</button>` : ''}
                       </div>
-                    </div>
-                  `).join('')}
+                    </div>`;
+                  }).join('')}
                 </div>
               </div>
             `;
@@ -1681,7 +1712,10 @@ async function nextRoundEvent(eventId) {
     if (result.champion) {
       showToast(result.message);
     } else {
-      var msg = '第' + result.round + '轮: 已创建 ' + result.battles.length + ' 场对战';
+      const bracketLabel = result.bracket === 'finals' ? '总决赛' : result.bracket === 'both' ? '胜者组+败者组' : result.bracket === 'losers' ? '败者组' : result.bracket === 'winners' ? '胜者组' : '';
+      var msg = '第' + result.round + '轮';
+      if (bracketLabel) msg += '(' + bracketLabel + ')';
+      msg += ': 已创建 ' + result.battles.length + ' 场对战';
       if (result.bye_player) msg += '，' + result.bye_player.name + ' 本轮轮空';
       showToast(msg);
     }

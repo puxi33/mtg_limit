@@ -537,6 +537,7 @@ ensureColumn('battles', 'player1_wins', "player1_wins INTEGER DEFAULT 0");
 ensureColumn('battles', 'player2_wins', "player2_wins INTEGER DEFAULT 0");
 ensureColumn('battles', 'current_game', "current_game INTEGER DEFAULT 1");
 ensureColumn('battles', 'round', "round INTEGER DEFAULT 1");
+ensureColumn('battles', 'bracket', "bracket TEXT DEFAULT 'winners'");
 ensureColumn('decks', 'outside_game', "outside_game TEXT DEFAULT '[]'");
 ensureColumn('users', 'role', "role TEXT DEFAULT 'user'");
 
@@ -2146,8 +2147,8 @@ app.post('/api/events/:id/auto-pair', authMiddleware, (req, res) => {
       const d2 = { name: p2.deck_name, main_deck: JSON.parse(p2.main_deck), sideboard: JSON.parse(p2.sideboard), outside_game: JSON.parse(p2.outside_game || '[]') };
       const name = `R1: ${p1.username} vs ${p2.username}`;
       const result = db.prepare(
-        'INSERT INTO battles (name, player1_id, player1_deck, player2_id, player2_deck, event_id, status, round) VALUES (?,?,?,?,?,?,?,?)'
-      ).run(name, p1.user_id, JSON.stringify(d1), p2.user_id, JSON.stringify(d2), req.params.id, 'waiting', 1);
+        'INSERT INTO battles (name, player1_id, player1_deck, player2_id, player2_deck, event_id, status, round, bracket) VALUES (?,?,?,?,?,?,?,?,?)'
+      ).run(name, p1.user_id, JSON.stringify(d1), p2.user_id, JSON.stringify(d2), req.params.id, 'waiting', 1, 'winners');
       createdBattles.push({ id: result.lastInsertRowid, p1: p1.username, p2: p2.username });
     }
 
@@ -2166,113 +2167,209 @@ app.post('/api/events/:id/auto-pair', authMiddleware, (req, res) => {
   }
 });
 
-// Next round pairing: pair winners from completed battles (single elimination)
+// Next round pairing: double elimination (winners bracket + losers bracket + finals)
 app.post('/api/events/:id/next-round', authMiddleware, (req, res) => {
   try {
     const event = db.prepare('SELECT * FROM events WHERE id = ?').get(req.params.id);
     if (!event) return res.status(404).json({ error: '活动不存在' });
     if (!isAdmin(req) && event.user_id !== req.user.id) return res.status(403).json({ error: '只有创建者可以配对' });
 
-    // Find the current max round
-    const maxRound = db.prepare('SELECT MAX(round) as maxRound FROM battles WHERE event_id = ?').get(req.params.id);
-    const currentRound = maxRound.maxRound || 1;
+    const eventId = req.params.id;
 
-    // Check all battles in current round are completed
-    const pendingBattles = db.prepare(
-      'SELECT COUNT(*) as cnt FROM battles WHERE event_id = ? AND round = ? AND status != ?'
-    ).get(req.params.id, currentRound, 'completed');
-    if (pendingBattles.cnt > 0) {
-      return res.status(400).json({ error: `第${currentRound}轮还有${pendingBattles.cnt}场对战未完成` });
+    // Check ALL existing battles are completed
+    const pending = db.prepare("SELECT COUNT(*) as cnt FROM battles WHERE event_id = ? AND status != 'completed'").get(eventId);
+    if (pending.cnt > 0) {
+      return res.status(400).json({ error: `还有${pending.cnt}场对战未完成` });
     }
 
-    // Get winners from current round
-    const winners = db.prepare(`
-      SELECT b.winner_id, b.round,
-             u.username,
-             d.id as deck_id, d.name as deck_name, d.main_deck, d.sideboard, d.outside_game
-      FROM battles b
-      JOIN users u ON b.winner_id = u.id
-      JOIN decks d ON d.user_id = b.winner_id AND d.event_id = ?
-      WHERE b.event_id = ? AND b.round = ? AND b.winner_id IS NOT NULL
-      ORDER BY b.id
-    `).all(req.params.id, req.params.id, currentRound);
+    // Helper: get deck for a user
+    function getDeck(userId) {
+      const d = db.prepare('SELECT * FROM decks WHERE user_id = ? AND event_id = ? ORDER BY created_at DESC LIMIT 1').get(userId, eventId);
+      if (!d) return null;
+      return { name: d.name, main_deck: JSON.parse(d.main_deck), sideboard: JSON.parse(d.sideboard), outside_game: JSON.parse(d.outside_game || '[]') };
+    }
 
-    // Deduplicate winners (keep latest deck)
-    const winSeen = new Set();
-    const uniqueWinners = [];
-    for (const w of winners) {
-      if (!winSeen.has(w.winner_id)) {
-        winSeen.add(w.winner_id);
-        uniqueWinners.push(w);
+    // Helper: create battle
+    function createBattle(p1Id, p1Name, p2Id, p2Name, round, bracket) {
+      const d1 = getDeck(p1Id);
+      const d2 = getDeck(p2Id);
+      if (!d1 || !d2) return null;
+      const prefix = bracket === 'losers' ? 'LB' : (bracket === 'finals' ? 'GF' : 'WB');
+      const name = `${prefix} R${round}: ${p1Name} vs ${p2Name}`;
+      const result = db.prepare(
+        'INSERT INTO battles (name, player1_id, player1_deck, player2_id, player2_deck, event_id, status, round, bracket) VALUES (?,?,?,?,?,?,?,?,?)'
+      ).run(name, p1Id, JSON.stringify(d1), p2Id, JSON.stringify(d2), eventId, 'waiting', round, bracket);
+      return { id: result.lastInsertRowid, p1: p1Name, p2: p2Name, bracket };
+    }
+
+    // Get all players who have ever participated (have a deck)
+    const allPlayers = db.prepare(`
+      SELECT DISTINCT d.user_id, u.username
+      FROM decks d JOIN users u ON d.user_id = u.id
+      WHERE d.event_id = ?
+    `).all(eventId);
+
+    // Determine current state of the tournament
+    const wbBattles = db.prepare("SELECT * FROM battles WHERE event_id = ? AND bracket = 'winners' ORDER BY round DESC").all(eventId);
+    const lbBattles = db.prepare("SELECT * FROM battles WHERE event_id = ? AND bracket = 'losers' ORDER BY round DESC").all(eventId);
+
+    // Find highest WB round and LB round
+    const maxWBRound = wbBattles.length > 0 ? Math.max(...wbBattles.map(b => b.round)) : 0;
+    const maxLBRound = lbBattles.length > 0 ? Math.max(...lbBattles.map(b => b.round)) : 0;
+
+    // Get results from latest WB round
+    const latestWBBattles = wbBattles.filter(b => b.round === maxWBRound);
+    const wbWinners = latestWBBattles.filter(b => b.winner_id).map(b => ({
+      id: b.winner_id,
+      username: allPlayers.find(p => p.user_id === b.winner_id)?.username || '?'
+    }));
+    const wbLosers = latestWBBattles.filter(b => b.winner_id).map(b => ({
+      id: b.player1_id === b.winner_id ? b.player2_id : b.player1_id,
+      username: allPlayers.find(p => p.user_id === (b.player1_id === b.winner_id ? b.player2_id : b.player1_id))?.username || '?'
+    }));
+
+    // Get results from latest LB round (if any)
+    let lbWinners = [];
+    if (maxLBRound > 0) {
+      const latestLBBattles = lbBattles.filter(b => b.round === maxLBRound);
+      lbWinners = latestLBBattles.filter(b => b.winner_id).map(b => ({
+        id: b.winner_id,
+        username: allPlayers.find(p => p.user_id === b.winner_id)?.username || '?'
+      }));
+    }
+
+    // Check for bye player from round 1 (never fought in round 1)
+    let byePlayer = null;
+    if (maxWBRound === 1) {
+      const r1Players = new Set();
+      wbBattles.filter(b => b.round === 1).forEach(b => { r1Players.add(b.player1_id); r1Players.add(b.player2_id); });
+      for (const p of allPlayers) {
+        if (!r1Players.has(p.user_id)) {
+          byePlayer = { id: p.user_id, username: p.username };
+          break;
+        }
       }
     }
 
-    // Check for bye player who hasn't fought yet (round > 1, they got a bye in round 1)
-    const byePlayer = db.prepare(`
-      SELECT p.user_id, u.username, d.id as deck_id, d.name as deck_name, d.main_deck, d.sideboard, d.outside_game
-      FROM participants p
-      JOIN users u ON p.user_id = u.id
-      JOIN decks d ON d.user_id = p.user_id AND d.event_id = ?
-      WHERE p.event_id = ?
-        AND p.user_id NOT IN (SELECT player1_id FROM battles WHERE event_id = ? AND round = 1)
-        AND p.user_id NOT IN (SELECT player2_id FROM battles WHERE event_id = ? AND round = 1)
-    `).get(req.params.id, req.params.id, req.params.id, req.params.id);
+    // === DECIDE NEXT STEP ===
 
-    const nextRound = currentRound + 1;
-    const allAdvancers = [...uniqueWinners];
-    if (byePlayer && !winSeen.has(byePlayer.user_id)) {
-      allAdvancers.push({
-        winner_id: byePlayer.user_id,
-        username: byePlayer.username,
-        deck_id: byePlayer.deck_id,
-        deck_name: byePlayer.deck_name,
-        main_deck: byePlayer.main_deck,
-        sideboard: byePlayer.sideboard,
-        outside_game: byePlayer.outside_game || '[]'
-      });
+    // Case 1: No LB yet -> Create LB with WB losers (+ bye player if applicable)
+    if (maxLBRound === 0 && maxWBRound >= 1) {
+      const lbPlayers = [...wbLosers];
+      if (byePlayer && !lbPlayers.find(p => p.id === byePlayer.id) && !wbWinners.find(p => p.id === byePlayer.id)) {
+        lbPlayers.push(byePlayer);
+      }
+
+      // Also create next WB round if enough winners
+      const createdBattles = [];
+
+      // WB next round
+      if (wbWinners.length >= 2) {
+        const shuffledWB = shuffle([...wbWinners]);
+        const pairs = Math.floor(shuffledWB.length / 2);
+        for (let i = 0; i < pairs; i++) {
+          const b = createBattle(shuffledWB[i*2].id, shuffledWB[i*2].username, shuffledWB[i*2+1].id, shuffledWB[i*2+1].username, maxWBRound + 1, 'winners');
+          if (b) createdBattles.push(b);
+        }
+      }
+
+      // LB first round
+      if (lbPlayers.length >= 2) {
+        const shuffledLB = shuffle([...lbPlayers]);
+        const pairs = Math.floor(shuffledLB.length / 2);
+        for (let i = 0; i < pairs; i++) {
+          const b = createBattle(shuffledLB[i*2].id, shuffledLB[i*2].username, shuffledLB[i*2+1].id, shuffledLB[i*2+1].username, maxWBRound + 1, 'losers');
+          if (b) createdBattles.push(b);
+        }
+        // Odd LB player gets bye (stays in LB)
+      }
+
+      if (createdBattles.length === 0) {
+        // Tournament over
+        const champ = wbWinners.length === 1 ? wbWinners[0] : null;
+        return res.json({ round: maxWBRound + 1, battles: [], champion: champ ? { id: champ.id, name: champ.username } : null, message: champ ? `${champ.username} 是冠军！` : '没有足够的玩家' });
+      }
+
+      const result = { round: maxWBRound + 1, battles: createdBattles, bracket: 'both', champion: null };
+      console.log(`[next-round] Event ${eventId}: WB R${maxWBRound+1} + LB R${maxWBRound+1}, ${createdBattles.length} battles`);
+      wsBroadcast(`event:${eventId}`, 'pairing_created', result);
+      return res.json(result);
     }
 
-    if (allAdvancers.length < 2) {
-      // Only 1 or 0 advancers — tournament is over
-      const champion = allAdvancers.length === 1 ? allAdvancers[0] : null;
-      return res.json({
-        round: nextRound,
-        battles: [],
-        champion: champion ? { id: champion.winner_id, name: champion.username } : null,
-        message: champion ? `${champion.username} 是冠军！` : '没有足够的晋级玩家'
-      });
+    // Case 2: LB exists -> Check if we need next LB round or next WB round
+    if (maxLBRound > 0) {
+      // If LB round < WB round, advance LB first (LB needs to catch up)
+      if (maxLBRound < maxWBRound) {
+        // LB needs to advance: LB winners + WB losers from current WB round
+        const lbPlayers = [...lbWinners, ...wbLosers];
+        if (lbPlayers.length >= 2) {
+          const createdBattles = [];
+          const shuffledLB = shuffle([...lbPlayers]);
+          const pairs = Math.floor(shuffledLB.length / 2);
+          for (let i = 0; i < pairs; i++) {
+            const b = createBattle(shuffledLB[i*2].id, shuffledLB[i*2].username, shuffledLB[i*2+1].id, shuffledLB[i*2+1].username, maxLBRound + 1, 'losers');
+            if (b) createdBattles.push(b);
+          }
+          const result = { round: maxLBRound + 1, battles: createdBattles, bracket: 'losers', champion: null };
+          console.log(`[next-round] Event ${eventId}: LB R${maxLBRound+1}, ${createdBattles.length} battles`);
+          wsBroadcast(`event:${eventId}`, 'pairing_created', result);
+          return res.json(result);
+        }
+        // Not enough for LB, fall through to WB advancement below
+      }
+
+      // LB is caught up -> Create next WB round
+      // WB winners advance, WB losers drop to LB
+      const createdBattles = [];
+
+      // WB next round
+      if (wbWinners.length >= 2) {
+        const shuffledWB = shuffle([...wbWinners]);
+        const pairs = Math.floor(shuffledWB.length / 2);
+        for (let i = 0; i < pairs; i++) {
+          const b = createBattle(shuffledWB[i*2].id, shuffledWB[i*2].username, shuffledWB[i*2+1].id, shuffledWB[i*2+1].username, maxWBRound + 1, 'winners');
+          if (b) createdBattles.push(b);
+        }
+      }
+
+      // LB next round: LB winners + new WB losers
+      const lbNextPlayers = [...lbWinners, ...wbLosers];
+      if (lbNextPlayers.length >= 2) {
+        const shuffledLB = shuffle([...lbNextPlayers]);
+        const pairs = Math.floor(shuffledLB.length / 2);
+        for (let i = 0; i < pairs; i++) {
+          const b = createBattle(shuffledLB[i*2].id, shuffledLB[i*2].username, shuffledLB[i*2+1].id, shuffledLB[i*2+1].username, maxWBRound + 1, 'losers');
+          if (b) createdBattles.push(b);
+        }
+      }
+
+      // Check if tournament is over (1 WB + 0 LB = champion)
+      if (wbWinners.length <= 1 && lbWinners.length <= 1 && wbLosers.length === 0) {
+        const champ = wbWinners.length === 1 ? wbWinners[0] : (lbWinners.length === 1 ? lbWinners[0] : null);
+        if (wbWinners.length === 1 && lbWinners.length === 1) {
+          // Grand finals: WB winner vs LB winner
+          const b = createBattle(wbWinners[0].id, wbWinners[0].username, lbWinners[0].id, lbWinners[0].username, maxWBRound + 1, 'finals');
+          if (b) createdBattles.push(b);
+          const result = { round: maxWBRound + 1, battles: createdBattles, bracket: 'finals', champion: null, message: '总决赛！' };
+          wsBroadcast(`event:${eventId}`, 'pairing_created', result);
+          return res.json(result);
+        }
+        return res.json({ round: maxWBRound + 1, battles: [], champion: champ ? { id: champ.id, name: champ.username } : null, message: champ ? `${champ.username} 是冠军！` : '没有足够的玩家' });
+      }
+
+      if (createdBattles.length === 0) {
+        const champ = wbWinners.length === 1 ? wbWinners[0] : null;
+        return res.json({ round: maxWBRound + 1, battles: [], champion: champ ? { id: champ.id, name: champ.username } : null, message: champ ? `${champ.username} 是冠军！` : '没有足够的玩家' });
+      }
+
+      const result = { round: maxWBRound + 1, battles: createdBattles, bracket: 'both', champion: null };
+      console.log(`[next-round] Event ${eventId}: WB R${maxWBRound+1} + LB R${maxWBRound+1}, ${createdBattles.length} battles`);
+      wsBroadcast(`event:${eventId}`, 'pairing_created', result);
+      return res.json(result);
     }
 
-    // Shuffle advancers and pair
-    const shuffled = shuffle([...allAdvancers]);
-    const pairCount = Math.floor(shuffled.length / 2);
-    const hasBye = shuffled.length % 2 === 1;
-    const newByePlayer = hasBye ? shuffled[shuffled.length - 1] : null;
-
-    const createdBattles = [];
-    for (let i = 0; i < pairCount; i++) {
-      const p1 = shuffled[i * 2];
-      const p2 = shuffled[i * 2 + 1];
-      const d1 = { name: p1.deck_name, main_deck: JSON.parse(p1.main_deck), sideboard: JSON.parse(p1.sideboard), outside_game: JSON.parse(p1.outside_game || '[]') };
-      const d2 = { name: p2.deck_name, main_deck: JSON.parse(p2.main_deck), sideboard: JSON.parse(p2.sideboard), outside_game: JSON.parse(p2.outside_game || '[]') };
-      const name = `R${nextRound}: ${p1.username} vs ${p2.username}`;
-      const result = db.prepare(
-        'INSERT INTO battles (name, player1_id, player1_deck, player2_id, player2_deck, event_id, status, round) VALUES (?,?,?,?,?,?,?,?)'
-      ).run(name, p1.winner_id, JSON.stringify(d1), p2.winner_id, JSON.stringify(d2), req.params.id, 'waiting', nextRound);
-      createdBattles.push({ id: result.lastInsertRowid, p1: p1.username, p2: p2.username });
-    }
-
-    const result = {
-      round: nextRound,
-      battles: createdBattles,
-      total_advancers: allAdvancers.length,
-      paired: pairCount * 2,
-      bye_player: newByePlayer ? { id: newByePlayer.winner_id, name: newByePlayer.username } : null,
-      champion: null
-    };
-    console.log(`[next-round] Event ${req.params.id}: Round ${nextRound}, ${allAdvancers.length} advancers, ${pairCount} battles`);
-    wsBroadcast(`event:${req.params.id}`, 'pairing_created', result);
-    res.json(result);
+    // Fallback: shouldn't reach here
+    return res.status(400).json({ error: '无法确定下一轮配对' });
   } catch (err) {
     console.error('[next-round] error:', err);
     res.status(500).json({ error: err.message });
