@@ -544,7 +544,12 @@ ensureColumn('decks', 'outside_game', "outside_game TEXT DEFAULT '[]'");
 // ============================================================
 app.set('trust proxy', true);
 app.use((req, res, next) => {
-  if (req.headers['x-forwarded-proto'] !== 'https' && req.hostname !== 'localhost' && req.hostname !== '127.0.0.1') {
+  const proto = req.headers['x-forwarded-proto'];
+  const realScheme = req.headers['x-real-scheme'];
+  const scheme = req.headers['x-scheme'];
+  const isSecure = proto === 'https' || realScheme === 'https' || scheme === 'https' || req.secure;
+  const isLocal = req.hostname === 'localhost' || req.hostname === '127.0.0.1';
+  if (!isSecure && !isLocal) {
     return res.redirect(301, `https://${req.hostname}${req.url}`);
   }
   next();
