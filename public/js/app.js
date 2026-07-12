@@ -1814,7 +1814,12 @@ function renderDraftCards(cards, cardsPerPick) {
     container.appendChild(el);
   });
 
-  updateDraftConfirmUI(cardsPerPick);
+  // Use staged confirm UI if cards are staged via drag, otherwise use click-based UI
+  if (_draftStagedPicks.length > 0) {
+    updateStagedConfirmUI();
+  } else {
+    updateDraftConfirmUI(cardsPerPick);
+  }
 }
 
 function toggleDraftCardSelection(card, element) {
@@ -1853,6 +1858,7 @@ async function confirmDraftPickSingle(eventId, cardIds, cardData, targetColumn) 
     });
     if (result.draft_complete) {
       _manualPlacements = {};
+      _clearDraftColumns();
       showToast('轮抓完成！请构建你的牌组');
       navigate('event-detail', { id: eventId });
     } else {
@@ -2057,9 +2063,48 @@ async function pollDraftState(eventId) {
 // ============================================================
 // DRAFT COLUMNS SYSTEM (Two-panel redesign)
 // ============================================================
-var _draftColumns = null; // { '0': [], '1': [], ..., '6+': [], Land: [], Sideboard: [] }
-var _draftColumnKeys = ['0', '1', '2', '3', '4', '5', '6+', 'Land', 'Sideboard'];
-var _draftColumnNames = { '0': '0', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6+': '6+', 'Land': '地', 'Sideboard': '备牌' };
+var _draftColumns = null; // { '0': [], '1': [], ..., '6+': [], Land: [], Sideboard: [], Outside: [] }
+var _draftColumnKeys = ['0', '1', '2', '3', '4', '5', '6+', 'Land', 'Sideboard', 'Outside'];
+var _draftColumnNames = { '0': '0', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6+': '6+', 'Land': '地', 'Sideboard': '备牌', 'Outside': '游戏外' };
+
+function _draftStorageKey() {
+  var eid = (state.pageData && state.pageData.id) || 'unknown';
+  return 'draft_cols_' + eid;
+}
+
+function _saveDraftColumns() {
+  if (!_draftColumns) return;
+  try {
+    localStorage.setItem(_draftStorageKey(), JSON.stringify(_draftColumns));
+    localStorage.setItem(_draftStorageKey() + '_placements', JSON.stringify(_manualPlacements));
+  } catch(e) { /* ignore quota errors */ }
+}
+
+function _loadDraftColumns() {
+  try {
+    var saved = localStorage.getItem(_draftStorageKey());
+    var savedPlacements = localStorage.getItem(_draftStorageKey() + '_placements');
+    if (saved) {
+      _draftColumns = JSON.parse(saved);
+      // Ensure all keys exist
+      _draftColumnKeys.forEach(function(k) {
+        if (!_draftColumns[k]) _draftColumns[k] = [];
+      });
+    }
+    if (savedPlacements) {
+      _manualPlacements = JSON.parse(savedPlacements);
+    }
+  } catch(e) { /* ignore parse errors */ }
+}
+
+function _clearDraftColumns() {
+  try {
+    localStorage.removeItem(_draftStorageKey());
+    localStorage.removeItem(_draftStorageKey() + '_placements');
+  } catch(e) {}
+  _draftColumns = null;
+  _manualPlacements = {};
+}
 
 function getDraftCardColumn(card) {
   if (card.type && card.type.indexOf('Land') >= 0) return 'Land';
@@ -2069,6 +2114,10 @@ function getDraftCardColumn(card) {
 }
 
 function initDraftColumns(pool) {
+  // Try loading from localStorage on first init
+  if (!_draftColumns) {
+    _loadDraftColumns();
+  }
   // If we already have columns with cards, merge new pool cards into them
   if (_draftColumns) {
     var existingIds = {};
@@ -2083,6 +2132,7 @@ function initDraftColumns(pool) {
         _draftColumns[col].push(card);
       }
     });
+    _saveDraftColumns();
     return;
   }
   // Fresh init
@@ -2093,6 +2143,7 @@ function initDraftColumns(pool) {
     var col = _manualPlacements[String(card.id)] || getDraftCardColumn(card);
     _draftColumns[col].push(card);
   });
+  _saveDraftColumns();
 }
 
 function renderDraftColumns() {
@@ -2278,6 +2329,8 @@ function handleDraftColumnDrop(cardId, fromColumn, toColumn) {
   var card = fromArr.splice(cardIdx, 1)[0];
   if (!_draftColumns[toColumn]) _draftColumns[toColumn] = [];
   _draftColumns[toColumn].push(card);
+  _manualPlacements[String(card.id)] = toColumn;
+  _saveDraftColumns();
   renderDraftColumns();
 }
 
@@ -2293,6 +2346,7 @@ function stageDraftPick(card, targetColumn) {
   if (_draftColumns) {
     if (!_draftColumns[targetColumn]) _draftColumns[targetColumn] = [];
     _draftColumns[targetColumn].push(card);
+    _saveDraftColumns();
     renderDraftColumns();
   }
 
@@ -2315,10 +2369,18 @@ function stageDraftPick(card, targetColumn) {
 
 function updateStagedConfirmUI() {
   var cardsPerPick = (state.pageData && state.pageData._cardsPerPick) || 1;
+  var container = document.getElementById('draft-cards-container');
+  var currentPackLen = container ? container.querySelectorAll('[data-card-id]').length : 0;
+  var maxPickable = Math.min(cardsPerPick, Math.max(1, currentPackLen));
   var countEl = document.getElementById('draft-selected-count');
   var btn = document.getElementById('draft-confirm-btn');
-  if (countEl) countEl.textContent = '已选: ' + _draftStagedPicks.length + ' / ' + cardsPerPick;
-  if (btn) btn.disabled = _draftStagedPicks.length < 1 || _draftStagedPicks.length > cardsPerPick;
+  if (countEl) countEl.textContent = '已选: ' + _draftStagedPicks.length + ' / ' + maxPickable;
+  if (btn) {
+    btn.disabled = _draftStagedPicks.length < 1 || _draftStagedPicks.length > maxPickable;
+    if (_draftStagedPicks.length > 0) {
+      btn.textContent = '确认选择 (' + _draftStagedPicks.length + '/' + maxPickable + ')';
+    }
+  }
 }
 
 async function confirmStagedDraftPick(eventId) {
@@ -2359,6 +2421,7 @@ async function confirmStagedDraftPick(eventId) {
 
     if (result.draft_complete) {
       _manualPlacements = {};
+      _clearDraftColumns();
       showToast('轮抓完成！请构建你的牌组');
       navigate('event-detail', { id: eventId });
     } else {
@@ -2373,13 +2436,16 @@ async function confirmStagedDraftPick(eventId) {
 }
 
 async function autoCreateDeckFromDraft(eventId, pool) {
-  // Gather cards from columns: everything except Sideboard → main deck; Sideboard → sideboard
+  // Gather cards from columns: CMC columns + Land → main deck; Sideboard → sideboard; Outside → outside_game
   var mainDeck = [];
   var sideboard = [];
+  var outsideGame = [];
   if (_draftColumns) {
     _draftColumnKeys.forEach(function(k) {
       if (k === 'Sideboard') {
         sideboard = sideboard.concat(_draftColumns[k] || []);
+      } else if (k === 'Outside') {
+        outsideGame = outsideGame.concat(_draftColumns[k] || []);
       } else {
         mainDeck = mainDeck.concat(_draftColumns[k] || []);
       }
@@ -2397,9 +2463,11 @@ async function autoCreateDeckFromDraft(eventId, pool) {
       name: deckName,
       main_deck: mainDeck,
       sideboard: sideboard,
+      outside_game: outsideGame,
       event_id: eventId
     };
     var deck = await api('/api/decks', { method: 'POST', body: JSON.stringify(body) });
+    _clearDraftColumns();
     showToast('牌组已自动创建: ' + deckName);
     // Update the banner
     var banner = document.getElementById('draft-complete-banner');
@@ -3421,19 +3489,28 @@ function renderDeckZone(containerId, cards, onClick) {
 function handleDeckDrop(data, toZoneId) {
   var ds = state.pageData._deckState;
   if (!ds) return;
+  if (!ds.outsideGame) ds.outsideGame = [];
   var fromZone = data.fromZone;
   var cardId = data.cardId;
   if (fromZone === toZoneId) return;
 
-  var sourceArr = fromZone === 'deck-pool' ? ds.pool : ds.mainDeck;
-  var targetArr = toZoneId === 'deck-pool' ? ds.pool : ds.mainDeck;
+  // Map container IDs to state arrays
+  var zoneMap = {
+    'deck-pool': ds.pool,
+    'deck-main': ds.mainDeck,
+    'deck-outside': ds.outsideGame,
+    'deck-sideboard': ds.sideboard || []
+  };
+  var sourceArr = zoneMap[fromZone];
+  var targetArr = zoneMap[toZoneId];
+  if (!sourceArr || !targetArr) return;
 
   var idx = sourceArr.findIndex(function(c) { return c.id === cardId; });
   if (idx === -1) return;
   var card = sourceArr.splice(idx, 1)[0];
-  // Basic lands dragged to pool are discarded, not returned to pool
+  // Basic lands dragged back to pool are discarded, not returned to pool
   if (toZoneId === 'deck-pool' && card.type && card.type.indexOf('Basic Land') === 0) {
-    // discard
+    // discard basic land
   } else {
     targetArr.push(card);
   }
