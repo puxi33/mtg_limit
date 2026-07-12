@@ -3232,6 +3232,38 @@ function processGameAction(gs, userId, action) {
       gs.log.push(me.name + ' 将 ' + card.name + ' 切换为' + (card.is_creature ? '生物' : '非生物'));
       return { success: true };
     }
+    case 'random_roll': {
+      const { roll_type, custom_max } = action;
+      let result, label;
+      switch (roll_type) {
+        case 'coin':
+          result = Math.floor(Math.random() * 2); // 0 or 1
+          label = result === 0 ? '正面' : '反面';
+          break;
+        case 'd6':
+          result = Math.floor(Math.random() * 6) + 1;
+          label = String(result);
+          break;
+        case 'd20':
+          result = Math.floor(Math.random() * 20) + 1;
+          label = String(result);
+          break;
+        case 'custom': {
+          const max = parseInt(custom_max);
+          if (!max || max < 2 || max > 1000) return { error: '无效的数字（2-1000）' };
+          result = Math.floor(Math.random() * max) + 1;
+          label = String(result);
+          break;
+        }
+        default:
+          return { error: '无效的随机类型' };
+      }
+      if (!gs.last_rolls) gs.last_rolls = [];
+      gs.last_rolls.push({ type: roll_type, value: result, label, player: myKey, player_name: me.name, ts: Date.now() });
+      if (gs.last_rolls.length > 5) gs.last_rolls.shift();
+      gs.log.push(me.name + ' 掷 ' + roll_type + ' → ' + label);
+      return { success: true, roll: { type: roll_type, value: result, label, player: myKey, player_name: me.name } };
+    }
     default:
       return { error: '未知的操作类型' };
   }

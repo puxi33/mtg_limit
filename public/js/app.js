@@ -4772,7 +4772,7 @@ function renderBattlefieldOrganized(cards, playerKey, isMy, flipped) {
     return h;
   }
 
-  var html = '<div class="bf-layout">';
+  var html = '<div class="bf-layout' + (flipped ? ' opp-layout' : '') + '">';
   if (flipped) {
     // Opponent side: lands+others on top, creatures on bottom (mirror of my side)
     html += bottomRow();
@@ -4964,6 +4964,118 @@ function onBattlefieldResize() {
   }, 150);
 }
 
+// ============================================================
+// Dice / Coin Toolbox
+// ============================================================
+function renderToolboxHtml(battleId, isOpp) {
+  var side = isOpp ? 'opp' : 'my';
+  return '<div class="toolbox-wrapper">' +
+    '<button class="toolbox-btn" onclick="toggleToolbox(\'' + side + '\')" title="随机工具">' +
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>' +
+    '</button>' +
+    '<div class="toolbox-popup" id="toolbox-' + side + '">' +
+      '<div class="toolbox-option" onclick="doRandomRoll(\'' + battleId + '\',\'coin\')" title="抛硬币">' +
+        '<span class="toolbox-icon">\ud83e\ude99</span><span>\u629b\u786c\u5e01</span>' +
+      '</div>' +
+      '<div class="toolbox-option" onclick="doRandomRoll(\'' + battleId + '\',\'d6\')" title="D6">' +
+        '<span class="toolbox-icon">\ud83c\udfb2</span><span>D6</span>' +
+      '</div>' +
+      '<div class="toolbox-option" onclick="doRandomRoll(\'' + battleId + '\',\'d20\')" title="D20">' +
+        '<span class="toolbox-icon">\ud83d\udfe2</span><span>D20</span>' +
+      '</div>' +
+      '<div class="toolbox-option" onclick="doCustomRoll(\'' + battleId + '\')" title="D?">' +
+        '<span class="toolbox-icon">\u2753</span><span>D?</span>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function renderRollResultHtml(gs) {
+  var lastRolls = gs.last_rolls || [];
+  if (!lastRolls.length) return '';
+  var roll = lastRolls[lastRolls.length - 1];
+  var icon = roll.type === 'coin' ? '\ud83e\ude99' : roll.type === 'd6' ? '\ud83c\udfb2' : roll.type === 'd20' ? '\ud83d\udfe2' : '\ud83c\udfaf';
+  var typeLabel = roll.type === 'coin' ? '\u629b\u786c\u5e01' : roll.type === 'd6' ? 'D6' : roll.type === 'd20' ? 'D20' : 'D' + roll.value;
+  return '<div class="roll-result-badge">' +
+    icon + ' <span class="roll-value">' + escapeHtml(roll.label) + '</span>' +
+    '<span class="roll-type">' + typeLabel + '</span>' +
+    '<span class="roll-by">' + escapeHtml(roll.player_name || '') + '</span>' +
+  '</div>';
+}
+
+async function toggleToolbox(side) {
+  var popup = document.getElementById('toolbox-' + side);
+  if (!popup) return;
+  var isOpen = popup.classList.contains('open');
+  document.querySelectorAll('.toolbox-popup.open').forEach(function(p) { p.classList.remove('open'); });
+  if (!isOpen) popup.classList.add('open');
+}
+
+async function doRandomRoll(battleId, rollType) {
+  document.querySelectorAll('.toolbox-popup.open').forEach(function(p) { p.classList.remove('open'); });
+  try {
+    var result = await mtgaAction(battleId, { type: 'random_roll', roll_type: rollType });
+    if (result && result.roll) showRollAnimation(result.roll);
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function doCustomRoll(battleId) {
+  document.querySelectorAll('.toolbox-popup.open').forEach(function(p) { p.classList.remove('open'); });
+  var num = prompt('\u8bf7\u8f93\u5165\u968f\u673a\u6570\u8303\u56f4 (2-1000)\uff1a');
+  if (!num) return;
+  var max = parseInt(num);
+  if (!max || max < 2) { showToast('\u8bf7\u8f93\u5165\u5927\u4e8e1\u7684\u6570\u5b57', 'error'); return; }
+  try {
+    var result = await mtgaAction(battleId, { type: 'random_roll', roll_type: 'custom', custom_max: max });
+    if (result && result.roll) showRollAnimation(result.roll);
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+function showRollAnimation(roll) {
+  var old = document.getElementById('roll-anim-overlay');
+  if (old) old.remove();
+  var overlay = document.createElement('div');
+  overlay.id = 'roll-anim-overlay';
+  var isCoin = roll.type === 'coin';
+  var icon = isCoin ? '\ud83e\ude99' : roll.type === 'd6' ? '\ud83c\udfb2' : roll.type === 'd20' ? '\ud83d\udfe2' : '\ud83c\udfaf';
+  var typeLabel = isCoin ? '\u629b\u786c\u5e01' : roll.type.toUpperCase();
+  var maxVal = isCoin ? 2 : roll.type === 'd6' ? 6 : roll.type === 'd20' ? 20 : roll.value;
+  var frames = [];
+  for (var i = 0; i < 14; i++) {
+    frames.push(isCoin ? (Math.random() < 0.5 ? '\u6b63\u9762' : '\u53cd\u9762') : String(Math.floor(Math.random() * maxVal) + 1));
+  }
+  frames.push(roll.label);
+  overlay.innerHTML =
+    '<div class="roll-anim-box">' +
+      '<div class="roll-anim-icon">' + icon + '</div>' +
+      '<div class="roll-anim-label">' + typeLabel + '</div>' +
+      '<div class="roll-anim-number" id="roll-anim-num">' + frames[0] + '</div>' +
+      '<div class="roll-anim-player">' + escapeHtml(roll.player_name || '') + '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  var numEl = document.getElementById('roll-anim-num');
+  var frameIdx = 0;
+  var interval = setInterval(function() {
+    frameIdx++;
+    if (frameIdx >= frames.length) {
+      clearInterval(interval);
+      if (numEl) numEl.classList.add('roll-final');
+      setTimeout(function() {
+        if (overlay.parentNode) overlay.classList.add('roll-fadeout');
+        setTimeout(function() { if (overlay.parentNode) overlay.remove(); }, 600);
+      }, 2200);
+      return;
+    }
+    if (numEl) numEl.textContent = frames[frameIdx];
+  }, 70);
+}
+
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('.toolbox-wrapper')) {
+    document.querySelectorAll('.toolbox-popup.open').forEach(function(p) { p.classList.remove('open'); });
+  }
+});
+
 function renderBattleBoard(el, battle, battleId, myKey, oppKey) {
   var gs = battle.game_state;
   var me = gs.players[myKey];
@@ -5020,6 +5132,8 @@ function renderBattleBoard(el, battle, battleId, myKey, oppKey) {
           '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',2)" title="+2">+2</button>' +
           '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',5)" title="+5">+5</button>' +
         '</div>' +
+        renderRollResultHtml(gs) +
+        renderToolboxHtml(battleId, true) +
         '<div class="mtga-stat">Hand <span class="num">' + (opp?.hand || []).length + '</span></div>' +
         '<div class="mtga-stat" style="margin-left:auto">Library ' + (opp?.library || []).length + '</div>' +
         renderLibraryStack((opp?.library || []).length, 'opp-library') +
@@ -5058,6 +5172,8 @@ function renderBattleBoard(el, battle, battleId, myKey, oppKey) {
           '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'self\',2)" title="+2">+2</button>' +
           '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'self\',5)" title="+5">+5</button>' +
         '</div>' +
+        renderRollResultHtml(gs) +
+        renderToolboxHtml(battleId, false) +
         '<div class="mtga-stat" style="margin-left:auto">Library ' + (me?.library || []).length + '</div>' +
         renderLibraryStack((me?.library || []).length, 'my-library') +
       '</div>' +
