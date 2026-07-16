@@ -24,6 +24,7 @@
     }
     #battle-root {
       width: 100vw;
+      height: var(--vh-adjusted, 100svh);
       height: var(--vh-adjusted, 100dvh);
       display: flex;
       flex-direction: column;
@@ -591,7 +592,7 @@
       max-width: 500px;
       max-height: 70vh;
       overflow-y: auto;
-      padding-bottom: env(safe-area-inset-bottom, 8px);
+      padding-bottom: var(--nav-bar-height, env(safe-area-inset-bottom, 8px));
       animation: m-slide-up 0.2s ease;
     }
     @keyframes m-slide-up {
@@ -920,88 +921,114 @@
 </head>
 <body>
   <script>
-    // Detect system navigation bar height that overlaps page content.
-    // Many Android browsers return 0 for env(safe-area-inset-bottom)
-    // even when the nav bar overlaps the page, so we measure dynamically.
+    // Detect system navigation bar / browser toolbar overlap and fix page height.
+    // iOS Chrome/Safari: 100dvh includes home indicator area; env() may under-report.
+    // Android: env(safe-area-inset-bottom) often returns 0 for nav bar overlap.
+    // Solution: measure actual visible height and set explicit pixel-based root height.
     (function() {
-      function detectNavBar() {
-        var root = document.getElementById('battle-root');
-        if (!root) return;
+      var rootEl = null;
+      var fsActive = false;
 
-        // Method 1: CSS env (works on iOS Safari, some Android)
+      function getNavBarHeight() {
+        // Method 1: CSS env probe (works on iOS with viewport-fit=cover)
         var envInset = 0;
         try {
           var probe = document.createElement('div');
-          probe.style.cssText = 'position:fixed;bottom:0;height:env(safe-area-inset-bottom,0px);pointer-events:none';
+          probe.style.cssText = 'position:fixed;bottom:0;left:0;height:env(safe-area-inset-bottom,0px);pointer-events:none;visibility:hidden';
           document.body.appendChild(probe);
           envInset = probe.offsetHeight;
           document.body.removeChild(probe);
         } catch(e) {}
 
-        // Method 2: VisualViewport API (detects system UI overlap)
+        // Method 2: VisualViewport API
         var vvInset = 0;
         if (window.visualViewport) {
           var vv = window.visualViewport;
-          // The difference between layout viewport and visual viewport
-          // when page is not scrolled indicates system UI overlap
           var layoutH = window.innerHeight;
           var visualH = vv.height;
-          // visualViewport.height can be smaller than innerHeight when
-          // the browser's bottom UI (nav bar) overlaps the content
           if (visualH < layoutH) {
             vvInset = Math.round(layoutH - visualH);
           }
-          // Also check pageBottom offset (distance from visual bottom to layout bottom)
           if (vv.pageBottom > 0) {
             vvInset = Math.max(vvInset, Math.round(vv.pageBottom));
           }
         }
 
-        var navBarHeight = Math.max(envInset, vvInset);
-
-        // Fallback: if we couldn't detect but we're on Android mobile,
-        // apply a conservative default
-        if (navBarHeight === 0) {
-          var ua = navigator.userAgent || '';
-          var isAndroid = /Android/i.test(ua);
-          var isMobile = /Mobile/i.test(ua);
-          if (isAndroid && isMobile) {
-            navBarHeight = 24;
+        // Method 3: Screen vs window comparison (catches system UI outside viewport)
+        var screenInset = 0;
+        if (window.screen && window.screen.height) {
+          var chromeH = window.screen.height - window.innerHeight;
+          // If browser chrome + system UI takes > 100px, it's likely including nav bar
+          if (chromeH > 40 && chromeH < 300) {
+            screenInset = Math.round(chromeH * 0.4); // conservative fraction
           }
         }
 
-        root.style.paddingBottom = navBarHeight > 0 ? navBarHeight + 'px' : '0px';
+        var detected = Math.max(envInset, vvInset, screenInset);
 
-        // Also set a CSS custom property to reduce the root container height
-        // This is more reliable than padding alone
-        var fs = !!(document.fullscreenElement || document.webkitFullscreenElement);
-        if (navBarHeight > 0 && !fs) {
-          document.documentElement.style.setProperty('--vh-adjusted', 'calc(100dvh - ' + navBarHeight + 'px)');
-        } else {
+        // Fallback: any mobile device gets a minimum safe padding
+        if (detected === 0) {
+          var ua = navigator.userAgent || '';
+          var isMobile = /Mobile|Android|iPhone|iPad|iPod/i.test(ua);
+          if (isMobile) {
+            // iOS home indicator ~34px, Android nav bar ~24-48px
+            var isIOS = /iPhone|iPad|iPod/i.test(ua);
+            detected = isIOS ? 34 : 24;
+          }
+        }
+
+        return detected;
+      }
+
+      function applyFix() {
+        if (!rootEl) rootEl = document.getElementById('battle-root');
+        if (!rootEl) return;
+
+        fsActive = !!(document.fullscreenElement || document.webkitFullscreenElement);
+
+        if (fsActive) {
+          // In fullscreen, no browser chrome — use full viewport
+          rootEl.style.height = '100dvh';
+          rootEl.style.paddingBottom = '0px';
           document.documentElement.style.setProperty('--vh-adjusted', '100dvh');
+          return;
+        }
+
+        var navH = getNavBarHeight();
+
+        if (navH > 0) {
+          // Set explicit pixel height to bypass unreliable dvh units
+          var visibleH = window.innerHeight - navH;
+          rootEl.style.height = visibleH + 'px';
+          rootEl.style.paddingBottom = navH + 'px';
+          document.documentElement.style.setProperty('--vh-adjusted', visibleH + 'px');
+          document.documentElement.style.setProperty('--nav-bar-height', navH + 'px');
+        } else {
+          rootEl.style.height = '100dvh';
+          rootEl.style.paddingBottom = '0px';
+          document.documentElement.style.setProperty('--vh-adjusted', '100dvh');
+          document.documentElement.style.setProperty('--nav-bar-height', '0px');
         }
       }
 
-      // Run on load
+      // Run at multiple stages to catch delayed browser chrome
       if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', detectNavBar);
+        document.addEventListener('DOMContentLoaded', applyFix);
       } else {
-        detectNavBar();
+        applyFix();
       }
 
-      // Re-check after a delay (browser chrome may appear after initial load)
-      setTimeout(detectNavBar, 500);
-      setTimeout(detectNavBar, 1500);
+      setTimeout(applyFix, 300);
+      setTimeout(applyFix, 1000);
+      setTimeout(applyFix, 2500);
 
-      // Re-check on viewport resize (orientation change, fullscreen toggle, etc.)
-      window.addEventListener('resize', detectNavBar);
+      window.addEventListener('resize', applyFix);
+      window.addEventListener('orientationchange', function() { setTimeout(applyFix, 200); });
       if (window.visualViewport) {
-        window.visualViewport.addEventListener('resize', detectNavBar);
+        window.visualViewport.addEventListener('resize', applyFix);
       }
-
-      // Re-check when entering/exiting fullscreen
-      document.addEventListener('fullscreenchange', function() { setTimeout(detectNavBar, 100); });
-      document.addEventListener('webkitfullscreenchange', function() { setTimeout(detectNavBar, 100); });
+      document.addEventListener('fullscreenchange', function() { setTimeout(applyFix, 150); });
+      document.addEventListener('webkitfullscreenchange', function() { setTimeout(applyFix, 150); });
     })();
   </script>
 
