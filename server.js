@@ -3368,12 +3368,12 @@ fs.mkdirSync(PLAYLISTS_DIR, { recursive: true });
 
 // Seed default playlists from bundled data if data/playlists is empty
 (function seedPlaylists() {
-  const existing = fs.readdirSync(PLAYLISTS_DIR).filter(f => f.endsWith('.json'));
-  if (existing.length === 0) {
-    const defaultDir = path.join(__dirname, 'default_playlists');
-    if (fs.existsSync(defaultDir)) {
-      const defaults = fs.readdirSync(defaultDir).filter(f => f.endsWith('.json'));
-      for (const f of defaults) {
+  const existing = new Set(fs.readdirSync(PLAYLISTS_DIR).filter(f => f.endsWith('.json')));
+  const defaultDir = path.join(__dirname, 'default_playlists');
+  if (fs.existsSync(defaultDir)) {
+    const defaults = fs.readdirSync(defaultDir).filter(f => f.endsWith('.json'));
+    for (const f of defaults) {
+      if (!existing.has(f)) {
         fs.copyFileSync(path.join(defaultDir, f), path.join(PLAYLISTS_DIR, f));
         console.log('Seeded playlist:', f);
       }
