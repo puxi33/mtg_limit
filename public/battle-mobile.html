@@ -8,35 +8,6 @@
   <title>MTG 对战</title>
   <link rel="stylesheet" href="/css/style.css">
   <style>
-    /* ========== Force Landscape ========== */
-    @media screen and (orientation: portrait) {
-      #rotate-hint {
-        display: flex !important;
-      }
-      #battle-root { display: none !important; }
-    }
-    #rotate-hint {
-      display: none;
-      position: fixed;
-      top: 0; left: 0; width: 100vw; height: 100vh;
-      background: #080c18;
-      color: #d8dce8;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      z-index: 99999;
-      font-size: 1.2rem;
-      gap: 16px;
-    }
-    #rotate-hint .rotate-icon {
-      font-size: 3rem;
-      animation: rotate-hint-anim 2s ease-in-out infinite;
-    }
-    @keyframes rotate-hint-anim {
-      0%, 100% { transform: rotate(0deg); }
-      50% { transform: rotate(90deg); }
-    }
-
     /* ========== Base Reset ========== */
     html, body {
       margin: 0;
@@ -199,25 +170,43 @@
       overflow: hidden;
       min-width: 0;
     }
-    .m-bf-creatures, .m-bf-others {
+    .m-bf-creatures, .m-bf-others, .m-bf-lands {
       display: flex;
       flex-wrap: nowrap;
       gap: 0;
-      align-items: flex-start;
+      align-items: center;
       overflow-x: auto;
       overflow-y: hidden;
       -webkit-overflow-scrolling: touch;
       scrollbar-width: none;
+      padding-left: 20px;
+      position: relative;
     }
     .m-bf-creatures::-webkit-scrollbar,
-    .m-bf-others::-webkit-scrollbar { display: none; }
+    .m-bf-others::-webkit-scrollbar,
+    .m-bf-lands::-webkit-scrollbar { display: none; }
     .m-bf-creatures {
-      flex: 1;
+      flex: 3;
       min-height: 0;
     }
-    .m-bf-others {
-      flex-shrink: 0;
-      max-height: 50%;
+    .m-bf-others, .m-bf-lands {
+      flex: 2;
+      min-height: 0;
+      border-top: 1px solid rgba(80,100,140,0.06);
+    }
+    .m-bf-zone-label {
+      position: absolute;
+      left: 2px;
+      top: 50%;
+      transform: translateY(-50%) rotate(-90deg);
+      font-size: 0.42rem;
+      color: rgba(160,170,195,0.22);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-weight: 700;
+      white-space: nowrap;
+      pointer-events: none;
+      z-index: 1;
     }
     .m-bf-empty {
       color: rgba(160,170,195,0.15);
@@ -329,6 +318,16 @@
     .m-card-container:not(:first-child) {
       margin-left: 2px;
     }
+
+    /* Smaller cards for non-creature permanents zone */
+    .m-bf-others .m-card { width: 44px; height: 62px; }
+    .m-bf-others .m-card.tapped { margin: 9px 0; }
+    .m-bf-others .m-card-name { max-width: 44px; font-size: 0.4rem; }
+
+    /* Even smaller cards for lands zone */
+    .m-bf-lands .m-card { width: 38px; height: 54px; }
+    .m-bf-lands .m-card.tapped { margin: 8px 0; }
+    .m-bf-lands .m-card-name { max-width: 38px; font-size: 0.38rem; }
 
     /* Token card */
     .m-token {
@@ -452,7 +451,7 @@
     /* ========== Hand Area ========== */
     .m-hand {
       flex-shrink: 0;
-      height: 90px;
+      height: 95px;
       background: linear-gradient(180deg, rgba(12,18,32,0.7) 0%, rgba(8,12,22,0.95) 100%);
       border-top: 1px solid rgba(80,100,140,0.1);
       position: relative;
@@ -482,8 +481,8 @@
     }
     .m-hand-inner::-webkit-scrollbar { display: none; }
     .m-hand-card {
-      width: 46px;
-      height: 64px;
+      width: 50px;
+      height: 70px;
       border-radius: 3px;
       overflow: hidden;
       flex-shrink: 0;
@@ -896,12 +895,6 @@
   </style>
 </head>
 <body>
-  <div id="rotate-hint">
-    <div class="rotate-icon">📱</div>
-    <div>请横屏使用</div>
-    <div style="font-size:0.8rem;opacity:0.5">Please rotate your device to landscape</div>
-  </div>
-
   <div id="battle-root">
     <div class="m-loading" id="battle-loading">对战加载中...</div>
   </div>
@@ -1189,10 +1182,13 @@
         }
       });
 
-      var bottomCards = lands.concat(others);
-      var html = '<div class="m-bf-creatures">';
-      if (creatures.length === 0 && bottomCards.length === 0) {
-        html += '<div class="m-bf-empty">空</div>';
+      var html = '';
+
+      // Creatures row
+      html += '<div class="m-bf-creatures">';
+      html += '<div class="m-bf-zone-label">生物</div>';
+      if (creatures.length === 0) {
+        html += '<div class="m-bf-empty">—</div>';
       } else {
         creatures.forEach(function(card) {
           html += renderMBattlefieldCard(card, playerKey, isMine);
@@ -1200,13 +1196,29 @@
       }
       html += '</div>';
 
-      if (bottomCards.length > 0) {
-        html += '<div class="m-bf-others">';
-        bottomCards.forEach(function(card) {
+      // Non-creature permanents row
+      html += '<div class="m-bf-others">';
+      html += '<div class="m-bf-zone-label">永久物</div>';
+      if (others.length === 0) {
+        html += '<div class="m-bf-empty">—</div>';
+      } else {
+        others.forEach(function(card) {
           html += renderMBattlefieldCard(card, playerKey, isMine);
         });
-        html += '</div>';
       }
+      html += '</div>';
+
+      // Lands row
+      html += '<div class="m-bf-lands">';
+      html += '<div class="m-bf-zone-label">地</div>';
+      if (lands.length === 0) {
+        html += '<div class="m-bf-empty">—</div>';
+      } else {
+        lands.forEach(function(card) {
+          html += renderMBattlefieldCard(card, playerKey, isMine);
+        });
+      }
+      html += '</div>';
 
       return html;
     }
@@ -1325,7 +1337,7 @@
     function setupMobileHandlers(battle) {
       // Prevent default touch behaviors
       document.addEventListener('touchmove', function(e) {
-        if (e.target.closest('.m-hand-inner') || e.target.closest('.m-bf-creatures') || e.target.closest('.m-bf-others') || e.target.closest('.m-zone-modal-body')) return;
+        if (e.target.closest('.m-hand-inner') || e.target.closest('.m-bf-creatures') || e.target.closest('.m-bf-others') || e.target.closest('.m-bf-lands') || e.target.closest('.m-zone-modal-body')) return;
         e.preventDefault();
       }, { passive: false });
 
