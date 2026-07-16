@@ -2152,6 +2152,16 @@ app.post('/api/events/:id/auto-pair', authMiddleware, (req, res) => {
       createdBattles.push({ id: result.lastInsertRowid, p1: p1.username, p2: p2.username });
     }
 
+    // Create bye battle: bye player gets an automatic win (counts as WB victory)
+    if (byePlayer) {
+      const byeDeck = { name: byePlayer.deck_name, main_deck: JSON.parse(byePlayer.main_deck), sideboard: JSON.parse(byePlayer.sideboard), outside_game: JSON.parse(byePlayer.outside_game || '[]') };
+      const byeBattleName = `R1: ${byePlayer.username} 轮空晋级`;
+      const byeResult = db.prepare(
+        'INSERT INTO battles (name, player1_id, player1_deck, player2_id, player2_deck, event_id, status, winner_id, round, bracket) VALUES (?,?,?,NULL,NULL,?,?,?,?,?)'
+      ).run(byeBattleName, byePlayer.user_id, JSON.stringify(byeDeck), req.params.id, 'completed', byePlayer.user_id, 1, 'winners');
+      createdBattles.push({ id: byeResult.lastInsertRowid, p1: byePlayer.username, p2: '轮空晋级', bye: true });
+    }
+
     const result = {
       battles: createdBattles,
       total_players: shuffled.length,
@@ -2223,7 +2233,7 @@ app.post('/api/events/:id/next-round', authMiddleware, (req, res) => {
       id: b.winner_id,
       username: allPlayers.find(p => p.user_id === b.winner_id)?.username || '?'
     }));
-    const wbLosers = latestWBBattles.filter(b => b.winner_id).map(b => ({
+    const wbLosers = latestWBBattles.filter(b => b.winner_id && b.player2_id).map(b => ({
       id: b.player1_id === b.winner_id ? b.player2_id : b.player1_id,
       username: allPlayers.find(p => p.user_id === (b.player1_id === b.winner_id ? b.player2_id : b.player1_id))?.username || '?'
     }));
@@ -2238,27 +2248,11 @@ app.post('/api/events/:id/next-round', authMiddleware, (req, res) => {
       }));
     }
 
-    // Check for bye player from round 1 (never fought in round 1)
-    let byePlayer = null;
-    if (maxWBRound === 1) {
-      const r1Players = new Set();
-      wbBattles.filter(b => b.round === 1).forEach(b => { r1Players.add(b.player1_id); r1Players.add(b.player2_id); });
-      for (const p of allPlayers) {
-        if (!r1Players.has(p.user_id)) {
-          byePlayer = { id: p.user_id, username: p.username };
-          break;
-        }
-      }
-    }
-
     // === DECIDE NEXT STEP ===
 
-    // Case 1: No LB yet -> Create LB with WB losers (+ bye player if applicable)
+    // Case 1: No LB yet -> Create LB with WB losers
     if (maxLBRound === 0 && maxWBRound >= 1) {
       const lbPlayers = [...wbLosers];
-      if (byePlayer && !lbPlayers.find(p => p.id === byePlayer.id) && !wbWinners.find(p => p.id === byePlayer.id)) {
-        lbPlayers.push(byePlayer);
-      }
 
       // Also create next WB round if enough winners
       const createdBattles = [];

@@ -235,7 +235,7 @@ function navigate(page, params = {}, opts = {}) {
   state.pageData = params;
   closeNavMenu(); // Close mobile nav on navigate
   document.body.classList.remove('draft-fullscreen');
-  _manualPlacements = {};
+  // Note: preserve _manualPlacements for draft grouping data persistence
 
   // 同步 URL (history API)
   if (!opts.skipUrl) {
@@ -1267,8 +1267,9 @@ async function renderEventDetail(el, id) {
   window._lastPackIds = null;
   window._lastPoolSize = null;
   window._autoDeckInProgress = false;
-  _draftColumns = null;
-  _manualPlacements = {};
+  _columnMode = 'draft';
+  // Note: preserve _draftColumns, _manualPlacements, and localStorage data
+  // so the deck builder can use draft grouping info after draft completion
 
   try {
     const [event, myDeckRaw, eventBattlesRaw] = await Promise.all([
@@ -1351,12 +1352,26 @@ async function renderEventDetail(el, id) {
         (b.player1_id === uid || b.player2_id === uid) &&
         (b.bracket === 'losers' || b.bracket === 'finals')
       );
-      // Also eliminated if lost first round and there are already losers bracket battles done (they missed it)
-      // But simpler: not in any pending battle and tournament still going = effectively eliminated
       if (!lostEliminatingBattle) {
-        // Check if there's a next round they should be in
+        // Only check "not in any remaining round" if battles actually exist
+        if ((eventBattles || []).length === 0) return false; // no battles yet, tournament hasn't started
         const anyIncompleteBattle = (eventBattles || []).some(b => b.status !== 'completed');
-        if (!anyIncompleteBattle) return true; // all battles done and I'm not in next round
+        if (anyIncompleteBattle) {
+          // Tournament in progress but I have no active battle and didn't lose an eliminating one
+          // Could be between rounds - not eliminated
+          return false;
+        }
+        // All battles done - check if I'm the tournament champion
+        const wonFinals = (eventBattles || []).some(b =>
+          b.status === 'completed' && b.winner_id === uid && b.bracket === 'finals'
+        );
+        if (wonFinals) return false; // tournament champion
+        // All battles done and I'm not the champion and didn't lose eliminating match
+        // This means tournament is over and I was eliminated earlier
+        return (eventBattles || []).some(b =>
+          b.status === 'completed' && b.winner_id && b.winner_id !== uid &&
+          (b.player1_id === uid || b.player2_id === uid)
+        );
       }
       return lostEliminatingBattle;
     })();
@@ -1513,22 +1528,25 @@ async function renderEventDetail(el, id) {
                     const bBracket = b.bracket || 'winners';
                     const bBracketLabel = bBracket === 'finals' ? '🏆' : (bBracket === 'losers' ? 'LB' : 'WB');
                     const bBracketColor = bBracket === 'finals' ? '#d4a043' : (bBracket === 'losers' ? '#e74c3c' : '#3498db');
+                    const isBye = !b.player2_id;
                     return `
                     <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
                       <div style="display:flex;align-items:center;gap:6px">
                         <span class="badge" style="background:${bBracketColor};color:#fff;font-size:0.6rem;padding:2px 6px">${bBracketLabel}</span>
-                        <strong style="color:${b.status === 'completed' && b.winner_id === b.player1_id ? 'var(--success)' : 'var(--text-bright)'}">${b.player1_name || '?'}</strong>
-                        <span class="text-muted" style="margin:0 6px">vs</span>
-                        <strong style="color:${b.status === 'completed' && b.winner_id === b.player2_id ? 'var(--success)' : 'var(--text-bright)'}">${b.player2_name || '?'}</strong>
+                        <strong style="color:var(--success)">${b.player1_name || '?'}</strong>
+                        ${isBye
+                          ? '<span class="text-muted" style="margin:0 6px">轮空晋级</span>'
+                          : `<span class="text-muted" style="margin:0 6px">vs</span>
+                             <strong style="color:${b.status === 'completed' && b.winner_id === b.player2_id ? 'var(--success)' : 'var(--text-bright)'}">${b.player2_name || '?'}</strong>`}
                         <span class="badge badge-${b.status === 'completed' ? 'completed' : b.status === 'in_progress' ? 'progress' : 'waiting'}" style="margin-left:8px">
                           ${b.status === 'completed' ? '已结束' : b.status === 'in_progress' ? '进行中' : '等待中'}
                         </span>
                       </div>
                       <div style="display:flex;align-items:center;gap:8px">
-                        <span style="font-weight:600;color:var(--text-bright);font-size:0.9rem">
-                          ${b.player1_wins || 0} - ${b.player2_wins || 0}
-                        </span>
-                        ${(b.player1_id === state.user?.id || b.player2_id === state.user?.id) ? `<button class="btn btn-secondary btn-sm" onclick="openBattle(${b.id})">${b.status === 'completed' ? '查看' : '进入'}</button>` : ''}
+                        ${isBye
+                          ? '<span style="font-weight:600;color:var(--success);font-size:0.9rem">轮空胜</span>'
+                          : `<span style="font-weight:600;color:var(--text-bright);font-size:0.9rem">${b.player1_wins || 0} - ${b.player2_wins || 0}</span>
+                             ${(b.player1_id === state.user?.id || b.player2_id === state.user?.id) ? '<button class="btn btn-secondary btn-sm" onclick="openBattle(' + b.id + ')">' + (b.status === 'completed' ? '查看' : '进入') + '</button>' : ''}`}
                       </div>
                     </div>`;
                   }).join('')}
@@ -1699,7 +1717,7 @@ async function autoPairEvent(eventId) {
     if (!confirm('确定要自动配对所有已构建牌组的玩家吗？')) return;
     const result = await api(`/api/events/${eventId}/auto-pair`, { method: 'POST' });
     var msg = '已创建 ' + result.battles.length + ' 场对战';
-    if (result.bye_player) msg += '，' + result.bye_player.name + ' 本轮轮空';
+    if (result.bye_player) msg += '，' + result.bye_player.name + ' 轮空晋级';
     showToast(msg);
     navigate('event-detail', { id: eventId });
   } catch (err) { showToast(err.message, 'error'); }
@@ -1857,8 +1875,6 @@ async function confirmDraftPickSingle(eventId, cardIds, cardData, targetColumn) 
       body: JSON.stringify({ card_ids: cardIds })
     });
     if (result.draft_complete) {
-      _manualPlacements = {};
-      _clearDraftColumns();
       showToast('轮抓完成！请构建你的牌组');
       navigate('event-detail', { id: eventId });
     } else {
@@ -2066,6 +2082,81 @@ async function pollDraftState(eventId) {
 var _draftColumns = null; // { '0': [], '1': [], ..., '6+': [], Land: [], Sideboard: [], Outside: [] }
 var _draftColumnKeys = ['0', '1', '2', '3', '4', '5', '6+', 'Land', 'Sideboard', 'Outside'];
 var _draftColumnNames = { '0': '0', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6+': '6+', 'Land': '地', 'Sideboard': '备牌', 'Outside': '游戏外' };
+var _draftColumnsEventId = null; // Tracks which event the draft columns belong to
+
+// Column mode: 'draft' | 'deck' — makes the column system reusable for deck building
+var _columnMode = 'draft';
+
+// Context-aware column accessors
+function _getColumns() { return _columnMode === 'deck' ? window._deckColumns : _draftColumns; }
+function _setColumns(v) { if (_columnMode === 'deck') { window._deckColumns = v; } else { _draftColumns = v; } }
+function _getManualPlacements() { return _columnMode === 'deck' ? (window._deckManualPlacements || {}) : _manualPlacements; }
+function _setManualPlacement(cardId, col) {
+  if (_columnMode === 'deck') {
+    if (!window._deckManualPlacements) window._deckManualPlacements = {};
+    window._deckManualPlacements[String(cardId)] = col;
+  } else {
+    _manualPlacements[String(cardId)] = col;
+  }
+}
+function _getScrollEl() { return document.getElementById(_columnMode === 'deck' ? 'deck-columns-scroll' : 'draft-columns-scroll'); }
+function _getPoolCountEl() { return document.getElementById(_columnMode === 'deck' ? 'deck-pool-count' : 'draft-pool-count'); }
+function _clearManualPlacements() {
+  if (_columnMode === 'deck') { window._deckManualPlacements = {}; } else { _manualPlacements = {}; }
+}
+
+// Deck-mode storage key
+function _deckStorageKey() {
+  var deckId = (state.pageData && state.pageData._deckId) || 'unknown';
+  return 'deck_cols_' + deckId;
+}
+function _saveDeckColumns() {
+  if (!window._deckColumns) return;
+  try { localStorage.setItem(_deckStorageKey(), JSON.stringify(window._deckColumns)); } catch(e) {}
+}
+function _loadDeckColumns() {
+  try {
+    var saved = localStorage.getItem(_deckStorageKey());
+    if (saved) { window._deckColumns = JSON.parse(saved); return true; }
+  } catch(e) {}
+  return false;
+}
+function _clearDeckColumns() {
+  try { localStorage.removeItem(_deckStorageKey()); } catch(e) {}
+  window._deckColumns = null;
+  window._deckManualPlacements = {};
+}
+
+// Initialize deck columns from pool + main_deck + outside_game
+function initDeckColumns(pool, mainDeck, outsideGame, sideboard) {
+  window._deckColumns = {};
+  _draftColumnKeys.forEach(function(k) { window._deckColumns[k] = []; });
+  // Place main deck cards into CMC columns
+  (mainDeck || []).forEach(function(card) {
+    var col = getDraftCardColumn(card);
+    window._deckColumns[col].push(card);
+  });
+  // Place outside game cards into Outside column
+  (outsideGame || []).forEach(function(card) {
+    window._deckColumns['Outside'].push(card);
+  });
+  // Place sideboard cards into Sideboard column
+  (sideboard || []).forEach(function(card) {
+    window._deckColumns['Sideboard'].push(card);
+  });
+  // Place pool (remaining cards not in any zone) into CMC columns
+  (pool || []).forEach(function(card) {
+    var col = getDraftCardColumn(card);
+    window._deckColumns[col].push(card);
+  });
+  _saveDeckColumns();
+}
+
+// Reset deck columns on navigation
+function resetDeckColumns() {
+  window._deckColumns = null;
+  window._deckManualPlacements = {};
+}
 
 function _draftStorageKey() {
   var eid = (state.pageData && state.pageData.id) || 'unknown';
@@ -2104,6 +2195,7 @@ function _clearDraftColumns() {
   } catch(e) {}
   _draftColumns = null;
   _manualPlacements = {};
+  _draftColumnsEventId = null;
 }
 
 function getDraftCardColumn(card) {
@@ -2114,6 +2206,17 @@ function getDraftCardColumn(card) {
 }
 
 function initDraftColumns(pool) {
+  // Detect event switch — reset columns if navigating to a different event
+  var currentEventId = (state.pageData && state.pageData.id) || null;
+  if (currentEventId && _draftColumnsEventId && String(_draftColumnsEventId) !== String(currentEventId)) {
+    // Different event — reset everything
+    _draftColumns = null;
+    _manualPlacements = {};
+  }
+  if (currentEventId) {
+    _draftColumnsEventId = currentEventId;
+  }
+
   // Try loading from localStorage on first init
   if (!_draftColumns) {
     _loadDraftColumns();
@@ -2147,14 +2250,15 @@ function initDraftColumns(pool) {
 }
 
 function renderDraftColumns() {
-  var scrollEl = document.getElementById('draft-columns-scroll');
-  if (!scrollEl || !_draftColumns) return;
+  var scrollEl = _getScrollEl();
+  var cols = _getColumns();
+  if (!scrollEl || !cols) return;
   scrollEl.innerHTML = '';
 
   // Dynamic card overlap: adjusts so all cards fit in the tallest column
   var maxCards = 0;
   _draftColumnKeys.forEach(function(k) {
-    var len = (_draftColumns[k] || []).length;
+    var len = (cols[k] || []).length;
     if (len > maxCards) maxCards = len;
   });
   var colCount = _draftColumnKeys.length || 9;
@@ -2168,7 +2272,7 @@ function renderDraftColumns() {
   }
 
   _draftColumnKeys.forEach(function(key) {
-    var cards = _draftColumns[key] || [];
+    var cards = cols[key] || [];
     var colEl = document.createElement('div');
     colEl.className = 'draft-column' + (key === 'Sideboard' ? ' sideboard' : '');
     colEl.setAttribute('data-column', key);
@@ -2300,6 +2404,16 @@ function renderDraftColumns() {
         } else if (data.fromColumn) {
           // Column-to-column move
           handleDraftColumnDrop(data.cardId, data.fromColumn, key);
+        } else if (data.source === 'deck-search' && data.card) {
+          // Card dragged from search results into a column
+          var cols = _getColumns();
+          if (cols) {
+            if (!cols[key]) cols[key] = [];
+            cols[key].push(data.card);
+            _setManualPlacement(data.card.id, key);
+            if (_columnMode === 'deck') { _saveDeckColumns(); } else { _saveDraftColumns(); }
+            renderDraftColumns();
+          }
         }
       } catch (err) { /* ignore bad drops */ }
     });
@@ -2309,28 +2423,29 @@ function renderDraftColumns() {
   });
 
   // Update pool count
-  var countEl = document.getElementById('draft-pool-count');
+  var countEl = _getPoolCountEl();
   if (countEl) {
     var total = 0;
-    _draftColumnKeys.forEach(function(k) { total += (_draftColumns[k] || []).length; });
+    _draftColumnKeys.forEach(function(k) { total += (cols[k] || []).length; });
     countEl.textContent = total + '张';
   }
 }
 
 function handleDraftColumnDrop(cardId, fromColumn, toColumn) {
   if (fromColumn === toColumn) return;
-  if (!_draftColumns) return;
-  var fromArr = _draftColumns[fromColumn] || [];
+  var cols = _getColumns();
+  if (!cols) return;
+  var fromArr = cols[fromColumn] || [];
   var cardIdx = -1;
   for (var i = 0; i < fromArr.length; i++) {
     if (String(fromArr[i].id) === String(cardId)) { cardIdx = i; break; }
   }
   if (cardIdx < 0) return;
   var card = fromArr.splice(cardIdx, 1)[0];
-  if (!_draftColumns[toColumn]) _draftColumns[toColumn] = [];
-  _draftColumns[toColumn].push(card);
-  _manualPlacements[String(card.id)] = toColumn;
-  _saveDraftColumns();
+  if (!cols[toColumn]) cols[toColumn] = [];
+  cols[toColumn].push(card);
+  _setManualPlacement(card.id, toColumn);
+  if (_columnMode === 'deck') { _saveDeckColumns(); } else { _saveDraftColumns(); }
   renderDraftColumns();
 }
 
@@ -2420,8 +2535,6 @@ async function confirmStagedDraftPick(eventId) {
     _draftStagedPicks = [];
 
     if (result.draft_complete) {
-      _manualPlacements = {};
-      _clearDraftColumns();
       showToast('轮抓完成！请构建你的牌组');
       navigate('event-detail', { id: eventId });
     } else {
@@ -2467,7 +2580,6 @@ async function autoCreateDeckFromDraft(eventId, pool) {
       event_id: eventId
     };
     var deck = await api('/api/decks', { method: 'POST', body: JSON.stringify(body) });
-    _clearDraftColumns();
     showToast('牌组已自动创建: ' + deckName);
     // Update the banner
     var banner = document.getElementById('draft-complete-banner');
@@ -2634,100 +2746,74 @@ async function renderDeckDetail(el, deckId) {
     var deck = await api('/api/decks/' + deckId);
     if (!deck) { el.innerHTML = '<div class="empty-state"><h3>牌组不存在</h3></div>'; return; }
     _currentDeckDetail = { id: deck.id, name: deck.name, main_deck: deck.main_deck || [], sideboard: deck.sideboard || [], outside_game: deck.outside_game || [] };
+
+    // Switch to deck column mode and initialize
+    _columnMode = 'deck';
+    state.pageData._deckId = deck.id;
+    if (!_loadDeckColumns()) {
+      initDeckColumns([], _currentDeckDetail.main_deck, _currentDeckDetail.outside_game, _currentDeckDetail.sideboard);
+    }
+
     renderDeckDetailUI(el);
   } catch (err) {
     el.innerHTML = '<div class="empty-state"><h3>加载失败</h3><p>' + escapeHtml(err.message) + '</p></div>';
   }
 }
 
-var _deckDetailActiveTab = 'main'; // 'main', 'sideboard', 'outside_game'
+var _deckDetailActiveTab = 'main'; // kept for compatibility
 var _deckDetailSearchResults = null; // persist search results across re-renders
 
 function renderDeckDetailUI(el) {
   var d = _currentDeckDetail;
   if (!d) return;
-  var mainCount = d.main_deck.length;
-  var sbCount = d.sideboard.length;
-  var ogCount = (d.outside_game || []).length;
-  // Basic land counts
-  var landCounts = {};
-  d.main_deck.forEach(function(c) {
-    if (c.type && c.type.indexOf('Basic Land') === 0) {
-      var name = c.name || '';
-      landCounts[name] = (landCounts[name] || 0) + 1;
-    }
-  });
-  var landParts = [];
-  var landNames = { Plains: '平原', Island: '海岛', Swamp: '沼泽', Mountain: '山脉', Forest: '树林' };
-  ['Plains','Island','Swamp','Mountain','Forest'].forEach(function(k) {
-    if (landCounts[k]) landParts.push((landNames[k] || k) + ':' + landCounts[k]);
-  });
 
-  var tabs = [
-    { key: 'main', label: '主牌', count: mainCount },
-    { key: 'sideboard', label: '备牌', count: sbCount },
-    { key: 'outside_game', label: '游戏外', count: ogCount }
-  ];
+  var totalCards = 0;
+  _draftColumnKeys.forEach(function(k) { totalCards += (window._deckColumns ? (window._deckColumns[k] || []).length : 0); });
 
   el.innerHTML =
     '<div class="page-header">' +
-      '<button class="btn btn-secondary btn-sm" onclick="navigate(\'decks\')">\u2190 返回</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="saveAndCloseDeckDetail()">\u2190 返回</button>' +
       '<h2 style="display:inline;margin-left:12px">' + escapeHtml(d.name) + '</h2>' +
       '<button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="saveDeckDetail()">保存</button>' +
     '</div>' +
-    '<!-- BASIC LANDS -->' +
-    '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">' +
-      '<span style="font-weight:600;color:var(--text-bright);font-size:0.9rem">添加基本地</span>' +
-      '<button class="btn btn-secondary btn-sm" onclick="addBasicLandToDetail(\'Plains\')" style="min-width:70px">平原 +1</button>' +
-      '<button class="btn btn-secondary btn-sm" onclick="addBasicLandToDetail(\'Island\')" style="min-width:70px">海岛 +1</button>' +
-      '<button class="btn btn-secondary btn-sm" onclick="addBasicLandToDetail(\'Swamp\')" style="min-width:70px">沼泽 +1</button>' +
-      '<button class="btn btn-secondary btn-sm" onclick="addBasicLandToDetail(\'Mountain\')" style="min-width:70px">山脉 +1</button>' +
-      '<button class="btn btn-secondary btn-sm" onclick="addBasicLandToDetail(\'Forest\')" style="min-width:70px">树林 +1</button>' +
-      '<span class="text-muted" style="font-size:0.8rem;margin-left:auto">' + (landParts.length ? landParts.join('  ') : '') + '</span>' +
-    '</div>' +
-    '<!-- SEARCH SECTION -->' +
-    '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;margin-bottom:16px">' +
-      '<h3 style="color:var(--text-bright);margin-bottom:12px">搜索卡牌</h3>' +
-      '<div style="display:flex;gap:8px;margin-bottom:12px">' +
-        '<input type="text" id="deck-search-input" placeholder="输入卡牌名称搜索... 左键点击加入当前分组" style="flex:1;padding:8px 12px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-bright);font-size:0.9rem" onkeydown="if(event.key===\'Enter\')searchDeckCards()">' +
-        '<button class="btn btn-secondary btn-sm" onclick="searchDeckCards()">搜索</button>' +
+    '<div class="draft-redesign" id="deck-redesign">' +
+      '<!-- Basic Lands -->' +
+      '<div class="draft-pick-strip" style="flex-direction:row;align-items:center;gap:12px;flex-wrap:wrap">' +
+        '<span style="font-weight:600;color:var(--text-bright);font-size:0.9rem">添加基本地</span>' +
+        '<button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck(\'Plains\')" style="min-width:70px">平原 +1</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck(\'Island\')" style="min-width:70px">海岛 +1</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck(\'Swamp\')" style="min-width:70px">沼泽 +1</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck(\'Mountain\')" style="min-width:70px">山脉 +1</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck(\'Forest\')" style="min-width:70px">树林 +1</button>' +
+        '<span id="basic-land-counts" class="text-muted" style="font-size:0.8rem;margin-left:auto"></span>' +
       '</div>' +
-      '<div id="deck-search-results"></div>' +
-    '</div>' +
-    '<!-- BATCH IMPORT -->' +
-    '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;margin-bottom:16px">' +
-      '<h3 style="color:var(--text-bright);margin-bottom:12px">批量导入</h3>' +
-      '<textarea id="deck-batch-import-text" rows="4" style="width:100%;font-family:monospace;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-bright);padding:8px" placeholder="每行: 数量 卡名 (如: 4 Lightning Bolt)"></textarea>' +
-      '<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="batchImportToCurrentDeck()">导入到主牌</button>' +
-    '</div>' +
-    '<!-- TABS -->' +
-    '<div style="margin-bottom:8px;display:flex;gap:0;border-bottom:2px solid var(--border)">' +
-      tabs.map(function(t) {
-        var isActive = _deckDetailActiveTab === t.key;
-        return '<button class="deck-tab-btn" data-tab="' + t.key + '" ' +
-          'style="padding:10px 20px;background:' + (isActive ? 'var(--bg-card)' : 'transparent') + ';' +
-          'color:' + (isActive ? 'var(--accent)' : 'var(--text-muted)') + ';' +
-          'border:none;border-bottom:2px solid ' + (isActive ? 'var(--accent)' : 'transparent') + ';' +
-          'cursor:pointer;font-weight:600;font-size:0.9rem;transition:all 0.15s;margin-bottom:-2px" ' +
-          'onclick="switchDeckTab(\'' + t.key + '\')" ' +
-          'onmouseenter="this.style.color=\'var(--accent)\'" ' +
-          'onmouseleave="if(\'' + t.key + '\'!==\'' + _deckDetailActiveTab + '\')this.style.color=\'var(--text-muted)\'">' +
-          t.label + ' <span style="font-weight:400;opacity:0.7">(' + t.count + ')</span></button>';
-      }).join('') +
-    '</div>' +
-    '<!-- TAB CONTENT -->' +
-    '<div style="background:var(--bg-card);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-lg) var(--radius-lg);padding:16px;min-height:200px">' +
-      '<div id="deck-tab-cards" class="mtg-cards-grid"></div>' +
+      '<!-- Card Search -->' +
+      '<div class="draft-pick-strip" id="deck-search-strip" style="gap:6px">' +
+        '<div style="display:flex;gap:8px;align-items:center">' +
+          '<input type="text" id="deck-search-input" placeholder="搜索卡牌名称... 点击添加到主牌组，或拖拽到下方列" style="flex:1;padding:8px 12px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-bright);font-size:0.9rem" onkeydown="if(event.key===\'Enter\')searchDeckBuilderCards()">' +
+          '<button class="btn btn-secondary btn-sm" onclick="searchDeckBuilderCards()">搜索</button>' +
+        '</div>' +
+        '<div id="deck-search-results" class="draft-pick-scroll" style="min-height:0;max-height:140px;padding:4px 0"></div>' +
+      '</div>' +
+      '<!-- Column layout -->' +
+      '<div class="draft-columns-area" id="deck-columns-area">' +
+        '<div class="draft-columns-header">' +
+          '<span style="color:var(--text-bright);font-size:0.85rem;font-weight:600">卡牌分组 <span class="text-muted" id="deck-pool-count" style="font-weight:400">' + totalCards + '张</span></span>' +
+        '</div>' +
+        '<div class="draft-columns-scroll" id="deck-columns-scroll"></div>' +
+      '</div>' +
     '</div>';
 
-  // Render active tab cards
-  renderDeckDetailTabCards();
-  // Restore search results if persisted
-  if (_deckDetailSearchResults) {
-    renderSearchResults(_deckDetailSearchResults);
-  }
-  // Setup tab drag-and-drop handlers
-  setupTabDragHandlers();
+  // Apply fullscreen styling
+  document.body.classList.add('draft-fullscreen');
+
+  // Render columns
+  renderDraftColumns();
+  updateDeckBasicLandCounts();
+}
+
+function saveAndCloseDeckDetail() {
+  saveDeckDetail();
 }
 
 function setupTabDragHandlers() {
@@ -3171,13 +3257,18 @@ async function batchImportToCurrentDeck() {
 async function saveDeckDetail() {
   if (!_currentDeckDetail) return;
   try {
+    var deckData;
+    if (_columnMode === 'deck' && window._deckColumns) {
+      deckData = getDeckDataFromColumns();
+      _clearDeckColumns();
+    } else {
+      deckData = { main_deck: _currentDeckDetail.main_deck, sideboard: _currentDeckDetail.sideboard, outside_game: _currentDeckDetail.outside_game || [] };
+    }
     await api('/api/decks/' + _currentDeckDetail.id, {
       method: 'PUT',
       body: JSON.stringify({
         name: _currentDeckDetail.name,
-        main_deck: _currentDeckDetail.main_deck,
-        sideboard: _currentDeckDetail.sideboard,
-        outside_game: _currentDeckDetail.outside_game || []
+        ...deckData
       })
     });
     showToast('牌组已保存');
@@ -3224,14 +3315,36 @@ async function renderDeckBuilder(el, params) {
     const deckName = existingDeck ? existingDeck.name : '';
     const outsideGame = existingDeck ? (existingDeck.outside_game || []) : [];
 
-    // When editing an existing deck with event pool, remove cards already in mainDeck and outsideGame
+    // When editing an existing deck with event pool, remove cards already in mainDeck, outsideGame, and sideboard
     if (existingDeck && params.eventId) {
-      var usedIds = new Set([...mainDeck.map(c => c.id), ...outsideGame.map(c => c.id)]);
+      const sideboard = existingDeck.sideboard || [];
+      var usedIds = new Set([...mainDeck.map(c => c.id), ...outsideGame.map(c => c.id), ...sideboard.map(c => c.id)]);
       pool = pool.filter(c => !usedIds.has(c.id));
     }
 
-    // Store state for click handlers (no sideboard in limited format)
+    // Store state for compatibility
     state.pageData._deckState = { pool: [...pool], mainDeck: [...mainDeck], outsideGame: [...outsideGame] };
+    state.pageData._deckId = existingDeck ? existingDeck.id : (eventId || 'new');
+
+    // Switch to deck column mode
+    _columnMode = 'deck';
+    // Check if we have draft columns from a just-completed draft
+    if (_draftColumns && Object.keys(_draftColumns).length > 0) {
+      window._deckColumns = JSON.parse(JSON.stringify(_draftColumns));
+      window._deckManualPlacements = JSON.parse(JSON.stringify(_manualPlacements || {}));
+      _saveDeckColumns();
+    } else if (!_loadDeckColumns()) {
+      if (eventId && existingDeck) {
+        // Event deck editing: pool = remaining event pool, sideboard = existing deck sideboard
+        initDeckColumns(pool, mainDeck, outsideGame, existingDeck.sideboard || []);
+      } else if (!eventId && existingDeck) {
+        // Custom deck editing: pool is actually the sideboard
+        initDeckColumns([], mainDeck, outsideGame, pool);
+      } else {
+        // Fresh deck building (no existing deck)
+        initDeckColumns(pool, [], [], []);
+      }
+    }
 
     // Determine back button target and save button
     var backTarget = betweenGames ? 'battle' : (eventId ? 'event-detail' : 'decks');
@@ -3243,6 +3356,10 @@ async function renderDeckBuilder(el, params) {
       : `saveDeck(${existingDeck ? existingDeck.id : 'null'}, ${eventId || 'null'})`;
     var title = betweenGames ? '调整牌组 (局间)' : (existingDeck ? '编辑牌组' : '构建牌组');
 
+    // Total card count
+    var totalCards = 0;
+    _draftColumnKeys.forEach(function(k) { totalCards += (window._deckColumns[k] || []).length; });
+
     el.innerHTML = `
       <div class="page-header">
         <div>
@@ -3250,51 +3367,104 @@ async function renderDeckBuilder(el, params) {
           <h2>${title}</h2>
         </div>
         <div class="flex gap-8" style="align-items:center">
-          <input type="text" id="deck-name" value="${deckName}" placeholder="牌组名称" style="width:180px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text-bright)">
+          <input type="text" id="deck-name" value="${escapeHtml(deckName)}" placeholder="牌组名称" style="width:180px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text-bright)">
           <button class="btn btn-primary" onclick="${saveOnclick}">${betweenGames ? '保存并开始下一局' : '保存'}</button>
         </div>
       </div>
 
-      <!-- Basic Lands -->
-      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <span style="font-weight:600;color:var(--text-bright);font-size:0.9rem">添加基本地</span>
-        <button class="btn btn-secondary btn-sm" onclick="addBasicLand('Plains')" style="min-width:70px">平原 +1</button>
-        <button class="btn btn-secondary btn-sm" onclick="addBasicLand('Island')" style="min-width:70px">海岛 +1</button>
-        <button class="btn btn-secondary btn-sm" onclick="addBasicLand('Swamp')" style="min-width:70px">沼泽 +1</button>
-        <button class="btn btn-secondary btn-sm" onclick="addBasicLand('Mountain')" style="min-width:70px">山脉 +1</button>
-        <button class="btn btn-secondary btn-sm" onclick="addBasicLand('Forest')" style="min-width:70px">树林 +1</button>
-        <span id="basic-land-counts" class="text-muted" style="font-size:0.8rem;margin-left:auto"></span>
-      </div>
+      <div class="draft-redesign" id="deck-redesign">
+        <!-- Basic Lands + Search (combined top bar) -->
+        <div class="draft-pick-strip" style="flex-direction:row;align-items:center;gap:12px;flex-wrap:wrap">
+          <span style="font-weight:600;color:var(--text-bright);font-size:0.9rem">添加基本地</span>
+          <button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck('Plains')" style="min-width:70px">平原 +1</button>
+          <button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck('Island')" style="min-width:70px">海岛 +1</button>
+          <button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck('Swamp')" style="min-width:70px">沼泽 +1</button>
+          <button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck('Mountain')" style="min-width:70px">山脉 +1</button>
+          <button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck('Forest')" style="min-width:70px">树林 +1</button>
+          <span id="basic-land-counts" class="text-muted" style="font-size:0.8rem;margin-left:auto"></span>
+        </div>
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-        <div>
-          <h3 style="color:var(--text-bright);margin-bottom:8px">
-            牌池 <span id="pool-count" class="text-muted" style="font-size:0.85rem">(${state.pageData._deckState.pool.length})</span>
-          </h3>
-          <p class="text-muted" style="font-size:0.8rem;margin-bottom:8px">点击或拖动卡牌到主牌组</p>
-          <div id="deck-pool" class="deck-builder-zone deck-cards-sm"></div>
+        ${!eventId ? `
+        <!-- Card Search (custom deck only) -->
+        <div class="draft-pick-strip" id="deck-search-strip" style="gap:6px">
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" id="deck-search-input" placeholder="搜索卡牌名称... 点击添加到主牌组" style="flex:1;padding:8px 12px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-bright);font-size:0.9rem" onkeydown="if(event.key==='Enter')searchDeckBuilderCards()">
+            <button class="btn btn-secondary btn-sm" onclick="searchDeckBuilderCards()">搜索</button>
+          </div>
+          <div id="deck-search-results" class="draft-pick-scroll" style="min-height:0;max-height:140px;padding:4px 0"></div>
         </div>
-        <div>
-          <h3 style="color:var(--text-bright);margin-bottom:8px">
-            主牌组 <span id="main-count" class="text-muted" style="font-size:0.85rem">(${state.pageData._deckState.mainDeck.length})</span>
-          </h3>
-          <p class="text-muted" style="font-size:0.8rem;margin-bottom:8px">点击基本地移除，其他卡牌返回牌池，拖动可调整位置</p>
-          <div id="deck-main" class="deck-builder-zone deck-cards-sm"></div>
+        ` : ''}
+
+        <!-- Column layout (same as draft) -->
+        <div class="draft-columns-area" id="deck-columns-area">
+          <div class="draft-columns-header">
+            <span style="color:var(--text-bright);font-size:0.85rem;font-weight:600">卡牌分组 <span class="text-muted" id="deck-pool-count" style="font-weight:400">${totalCards}张</span></span>
+          </div>
+          <div class="draft-columns-scroll" id="deck-columns-scroll"></div>
         </div>
-      </div>
-      <!-- OUTSIDE GAME -->
-      <div style="margin-top:16px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px">
-        <h3 style="color:var(--text-bright);margin-bottom:8px">
-          游戏外 <span id="outside-count" class="text-muted" style="font-size:0.85rem">(${state.pageData._deckState.outsideGame.length})</span>
-        </h3>
-        <p class="text-muted" style="font-size:0.8rem;margin-bottom:8px">对战开始时正面朝上放置在游戏外区域。从牌池拖动卡牌到此处。</p>
-        <div id="deck-outside" class="deck-builder-zone deck-cards-sm"></div>
       </div>
     `;
 
-    renderDeckBuilderCards();
+    // Apply fullscreen-like styling for deck builder
+    document.body.classList.add('draft-fullscreen');
+
+    // Render columns
+    renderDraftColumns();
+
+    // Update basic land counts display
+    updateDeckBasicLandCounts();
+
   } catch (err) {
-    el.innerHTML = `<div class="empty-state"><h3>加载失败</h3><p>${err.message}</p></div>`;
+    el.innerHTML = `<div class="empty-state"><h3>加载失败</h3><p>${escapeHtml(err.message)}</p></div>`;
+  }
+}
+
+// Search cards for the column-based deck builder (custom deck mode)
+async function searchDeckBuilderCards() {
+  var input = document.getElementById('deck-search-input');
+  var resultsEl = document.getElementById('deck-search-results');
+  if (!input || !resultsEl) return;
+  var q = input.value.trim();
+  if (!q) { resultsEl.innerHTML = ''; return; }
+  try {
+    var results = await api('/api/cards/search?q=' + encodeURIComponent(q));
+    if (!results || results.length === 0) {
+      resultsEl.innerHTML = '<span class="text-muted" style="padding:8px">未找到卡牌</span>';
+      return;
+    }
+    resultsEl.innerHTML = '';
+    (results || []).forEach(function(card) {
+      var el = createCardElement(card, function() {
+        // Click to add to main deck column (CMC-based)
+        var cols = _getColumns();
+        if (!cols) return;
+        var col = getDraftCardColumn(card);
+        var cardCopy = Object.assign({}, card, {
+          id: card.id + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)
+        });
+        if (!cols[col]) cols[col] = [];
+        cols[col].push(cardCopy);
+        if (_columnMode === 'deck') { _saveDeckColumns(); } else { _saveDraftColumns(); }
+        renderDraftColumns();
+        showToast(card.name + ' 已添加');
+      });
+      el.setAttribute('draggable', 'true');
+      el.addEventListener('dragstart', function(e) {
+        var cardCopy = Object.assign({}, card, {
+          id: card.id + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)
+        });
+        e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'deck-search', card: cardCopy }));
+        e.dataTransfer.effectAllowed = 'copy';
+        el.style.opacity = '0.5';
+      });
+      el.addEventListener('dragend', function() {
+        el.style.opacity = '';
+        document.querySelectorAll('.draft-column.drag-over').forEach(function(c) { c.classList.remove('drag-over'); });
+      });
+      resultsEl.appendChild(el);
+    });
+  } catch (err) {
+    resultsEl.innerHTML = '<span class="text-muted" style="padding:8px">搜索失败: ' + escapeHtml(err.message) + '</span>';
   }
 }
 
@@ -3545,12 +3715,70 @@ function addBasicLandToDetail(landType) {
   renderDeckDetailUI(document.getElementById('content'));
 }
 
-async function saveDeck(deckId, eventId) {
-  const ds = state.pageData._deckState;
-  if (!ds) return;
+// Add basic land to deck columns (column-based deck builder)
+function addBasicLandToDeck(landType) {
+  var cols = _getColumns();
+  if (!cols) return;
+  var land = Object.assign({}, BASIC_LANDS[landType], {
+    id: 'basic_' + landType.toLowerCase() + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)
+  });
+  if (!cols['Land']) cols['Land'] = [];
+  cols['Land'].push(land);
+  if (_columnMode === 'deck') { _saveDeckColumns(); } else { _saveDraftColumns(); }
+  renderDraftColumns();
+  updateDeckBasicLandCounts();
+}
 
+function updateDeckBasicLandCounts() {
+  var el = document.getElementById('basic-land-counts');
+  if (!el) return;
+  var cols = _getColumns();
+  if (!cols) return;
+  var landCards = cols['Land'] || [];
+  var counts = {};
+  landCards.forEach(function(c) {
+    var n = c.name || '';
+    counts[n] = (counts[n] || 0) + 1;
+  });
+  var landNames = { Plains: '平原', Island: '海岛', Swamp: '沼泽', Mountain: '山脉', Forest: '树林' };
+  var parts = [];
+  ['Plains','Island','Swamp','Mountain','Forest'].forEach(function(k) {
+    if (counts[k]) parts.push((landNames[k] || k) + ':' + counts[k]);
+  });
+  el.textContent = parts.join('  ');
+}
+
+// Extract deck data from columns for saving
+function getDeckDataFromColumns() {
+  var cols = _getColumns();
+  if (!cols) return { main_deck: [], sideboard: [], outside_game: [] };
+  var mainDeck = [];
+  var sideboard = [];
+  var outsideGame = [];
+  _draftColumnKeys.forEach(function(k) {
+    if (k === 'Sideboard') {
+      sideboard = sideboard.concat(cols[k] || []);
+    } else if (k === 'Outside') {
+      outsideGame = outsideGame.concat(cols[k] || []);
+    } else {
+      mainDeck = mainDeck.concat(cols[k] || []);
+    }
+  });
+  return { main_deck: mainDeck, sideboard: sideboard, outside_game: outsideGame };
+}
+
+async function saveDeck(deckId, eventId) {
   const name = document.getElementById('deck-name')?.value.trim() || '未命名牌组';
-  const body = { name, main_deck: ds.mainDeck, sideboard: ds.pool, outside_game: ds.outsideGame || [] };
+  var deckData;
+  if (_columnMode === 'deck' && window._deckColumns) {
+    deckData = getDeckDataFromColumns();
+    _clearDeckColumns();
+  } else {
+    const ds = state.pageData._deckState;
+    if (!ds) return;
+    deckData = { main_deck: ds.mainDeck, sideboard: ds.pool, outside_game: ds.outsideGame || [] };
+  }
+  const body = { name, ...deckData };
 
   try {
     if (deckId) {
@@ -3575,10 +3803,17 @@ async function saveDeck(deckId, eventId) {
 }
 
 async function saveDeckBetweenGames(battleId) {
-  const ds = state.pageData._deckState;
-  if (!ds) return;
   const name = document.getElementById('deck-name')?.value.trim() || '未命名牌组';
-  const updatedDeck = { name: name, main_deck: ds.mainDeck, sideboard: ds.pool, outside_game: ds.outsideGame || [] };
+  var deckData;
+  if (_columnMode === 'deck' && window._deckColumns) {
+    deckData = getDeckDataFromColumns();
+    _clearDeckColumns();
+  } else {
+    const ds = state.pageData._deckState;
+    if (!ds) return;
+    deckData = { main_deck: ds.mainDeck, sideboard: ds.pool, outside_game: ds.outsideGame || [] };
+  }
+  const updatedDeck = { name: name, ...deckData };
   try {
     await api('/api/battles/' + battleId + '/next-game', {
       method: 'POST',
@@ -3737,13 +3972,16 @@ async function renderBattleDetail(el, id) {
 }
 
 function renderBattleCompleted(el, battle, id) {
+  const isBye = !battle.player2_id;
   const winnerName = battle.winner_id === battle.player1_id ? battle.player1_name : battle.player2_name;
   el.innerHTML = `
     <div class="page-header">
       <button class="btn btn-secondary btn-sm" onclick="navigate('battles')">← 返回</button>
       <h2 style="display:inline;margin-left:12px">${escapeHtml(battle.name || ('对战 #' + id))}</h2>
     </div>
-    <div class="mtga-win-banner">🏆 ${escapeHtml(winnerName || '玩家')} 获胜</div>
+    ${isBye
+      ? `<div class="mtga-win-banner">轮空晋级 — ${escapeHtml(battle.player1_name || '玩家')} 自动获胜</div>`
+      : `<div class="mtga-win-banner">🏆 ${escapeHtml(winnerName || '玩家')} 获胜</div>`}
     <div style="text-align:center;margin-top:16px">
       <button class="btn btn-primary" onclick="navigate('battles')">返回对战列表</button>
     </div>
