@@ -509,6 +509,7 @@
       align-items: center;
       gap: 6px;
       padding: 4px 8px;
+      padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
       background: linear-gradient(180deg, rgba(12,16,28,0.95) 0%, rgba(8,12,20,1) 100%);
       border-top: 1px solid rgba(80,100,140,0.1);
       flex-shrink: 0;
@@ -537,6 +538,31 @@
     .m-action-btn-danger {
       color: rgba(231,76,60,0.9);
       border-color: rgba(231,76,60,0.2);
+    }
+
+    /* Fullscreen button */
+    .m-fs-btn {
+      width: 28px;
+      height: 28px;
+      border-radius: 4px;
+      border: 1px solid rgba(80,100,140,0.2);
+      background: rgba(25,35,55,0.6);
+      color: rgba(180,190,210,0.7);
+      font-size: 0.9rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      flex-shrink: 0;
+    }
+    .m-fs-btn:active {
+      background: rgba(40,55,85,0.8);
+      transform: scale(0.95);
+    }
+    .m-fs-btn.is-fullscreen {
+      color: rgba(212,160,67,0.9);
+      border-color: rgba(212,160,67,0.3);
     }
 
     /* ========== Bottom Sheet (Action Menu) ========== */
@@ -1320,6 +1346,7 @@
         '<button class="m-action-btn" onclick="showMobileTokenMenu()">+衍生物</button>' +
         '<button class="m-action-btn" onclick="showMobileDeckOptions()">牌库</button>' +
         '<button class="m-action-btn m-action-btn-danger" style="margin-left:auto" onclick="if(confirm(\'确定认输？\'))mtgaAction(' + bId + ',{type:\'concede\'})">认输</button>' +
+        '<button class="m-fs-btn" id="m-fs-btn" onclick="toggleFullscreen()" title="全屏">⛶</button>' +
       '</div>';
     }
 
@@ -1782,6 +1809,37 @@
         else mtgaLeaveBattle(bId);
       } catch(err) { mtgaLeaveBattle(bId); }
     }
+
+    // ========== Fullscreen ==========
+    function isFullscreen() {
+      return !!(document.fullscreenElement || document.webkitFullscreenElement);
+    }
+
+    function updateFullscreenBtn() {
+      var btn = document.getElementById('m-fs-btn');
+      if (!btn) return;
+      if (isFullscreen()) {
+        btn.classList.add('is-fullscreen');
+        btn.textContent = '✕';
+        btn.title = '退出全屏';
+      } else {
+        btn.classList.remove('is-fullscreen');
+        btn.textContent = '⛶';
+        btn.title = '全屏';
+      }
+    }
+
+    function toggleFullscreen() {
+      if (isFullscreen()) {
+        (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      } else {
+        var el = document.documentElement;
+        (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+      }
+    }
+
+    document.addEventListener('fullscreenchange', updateFullscreenBtn);
+    document.addEventListener('webkitfullscreenchange', updateFullscreenBtn);
   </script>
 </body>
 </html>
