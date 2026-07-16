@@ -24,8 +24,7 @@
     }
     #battle-root {
       width: 100vw;
-      height: 100vh;
-      height: 100dvh;
+      height: var(--vh-adjusted, 100dvh);
       display: flex;
       flex-direction: column;
       overflow: hidden;
@@ -508,8 +507,7 @@
       display: flex;
       align-items: center;
       gap: 6px;
-      padding: 4px 8px;
-      padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+      padding: 4px 8px 6px;
       background: linear-gradient(180deg, rgba(12,16,28,0.95) 0%, rgba(8,12,20,1) 100%);
       border-top: 1px solid rgba(80,100,140,0.1);
       flex-shrink: 0;
@@ -921,6 +919,92 @@
   </style>
 </head>
 <body>
+  <script>
+    // Detect system navigation bar height that overlaps page content.
+    // Many Android browsers return 0 for env(safe-area-inset-bottom)
+    // even when the nav bar overlaps the page, so we measure dynamically.
+    (function() {
+      function detectNavBar() {
+        var root = document.getElementById('battle-root');
+        if (!root) return;
+
+        // Method 1: CSS env (works on iOS Safari, some Android)
+        var envInset = 0;
+        try {
+          var probe = document.createElement('div');
+          probe.style.cssText = 'position:fixed;bottom:0;height:env(safe-area-inset-bottom,0px);pointer-events:none';
+          document.body.appendChild(probe);
+          envInset = probe.offsetHeight;
+          document.body.removeChild(probe);
+        } catch(e) {}
+
+        // Method 2: VisualViewport API (detects system UI overlap)
+        var vvInset = 0;
+        if (window.visualViewport) {
+          var vv = window.visualViewport;
+          // The difference between layout viewport and visual viewport
+          // when page is not scrolled indicates system UI overlap
+          var layoutH = window.innerHeight;
+          var visualH = vv.height;
+          // visualViewport.height can be smaller than innerHeight when
+          // the browser's bottom UI (nav bar) overlaps the content
+          if (visualH < layoutH) {
+            vvInset = Math.round(layoutH - visualH);
+          }
+          // Also check pageBottom offset (distance from visual bottom to layout bottom)
+          if (vv.pageBottom > 0) {
+            vvInset = Math.max(vvInset, Math.round(vv.pageBottom));
+          }
+        }
+
+        var navBarHeight = Math.max(envInset, vvInset);
+
+        // Fallback: if we couldn't detect but we're on Android mobile,
+        // apply a conservative default
+        if (navBarHeight === 0) {
+          var ua = navigator.userAgent || '';
+          var isAndroid = /Android/i.test(ua);
+          var isMobile = /Mobile/i.test(ua);
+          if (isAndroid && isMobile) {
+            navBarHeight = 24;
+          }
+        }
+
+        root.style.paddingBottom = navBarHeight > 0 ? navBarHeight + 'px' : '0px';
+
+        // Also set a CSS custom property to reduce the root container height
+        // This is more reliable than padding alone
+        var fs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+        if (navBarHeight > 0 && !fs) {
+          document.documentElement.style.setProperty('--vh-adjusted', 'calc(100dvh - ' + navBarHeight + 'px)');
+        } else {
+          document.documentElement.style.setProperty('--vh-adjusted', '100dvh');
+        }
+      }
+
+      // Run on load
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', detectNavBar);
+      } else {
+        detectNavBar();
+      }
+
+      // Re-check after a delay (browser chrome may appear after initial load)
+      setTimeout(detectNavBar, 500);
+      setTimeout(detectNavBar, 1500);
+
+      // Re-check on viewport resize (orientation change, fullscreen toggle, etc.)
+      window.addEventListener('resize', detectNavBar);
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', detectNavBar);
+      }
+
+      // Re-check when entering/exiting fullscreen
+      document.addEventListener('fullscreenchange', function() { setTimeout(detectNavBar, 100); });
+      document.addEventListener('webkitfullscreenchange', function() { setTimeout(detectNavBar, 100); });
+    })();
+  </script>
+
   <div id="battle-root">
     <div class="m-loading" id="battle-loading">对战加载中...</div>
   </div>
