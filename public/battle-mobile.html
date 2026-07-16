@@ -1,0 +1,1775 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>MTG 对战</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    /* ========== Force Landscape ========== */
+    @media screen and (orientation: portrait) {
+      #rotate-hint {
+        display: flex !important;
+      }
+      #battle-root { display: none !important; }
+    }
+    #rotate-hint {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; width: 100vw; height: 100vh;
+      background: #080c18;
+      color: #d8dce8;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 99999;
+      font-size: 1.2rem;
+      gap: 16px;
+    }
+    #rotate-hint .rotate-icon {
+      font-size: 3rem;
+      animation: rotate-hint-anim 2s ease-in-out infinite;
+    }
+    @keyframes rotate-hint-anim {
+      0%, 100% { transform: rotate(0deg); }
+      50% { transform: rotate(90deg); }
+    }
+
+    /* ========== Base Reset ========== */
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      background: linear-gradient(180deg, #080c18 0%, #0d1225 50%, #0a0f1e 100%);
+      color: #d8dce8;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    #battle-root {
+      width: 100vw;
+      height: 100vh;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      width: 100%;
+      max-width: none;
+      margin: 0;
+      padding: 0;
+      height: 100%;
+    }
+
+    /* ========== Board Layout ========== */
+    .m-board {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    /* Info bars */
+    .m-info-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 8px;
+      background: linear-gradient(180deg, rgba(15,20,35,0.85) 0%, rgba(12,16,28,0.95) 100%);
+      flex-shrink: 0;
+      font-size: 0.78rem;
+      min-height: 36px;
+    }
+    .m-player-name {
+      font-weight: 600;
+      color: rgba(220,225,240,0.85);
+      font-size: 0.8rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 80px;
+    }
+    .m-life {
+      font-size: 1.2rem;
+      font-weight: 800;
+      color: #e8ecf5;
+      min-width: 32px;
+      text-align: center;
+      line-height: 1;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(40,80,40,0.15);
+    }
+    .m-life.low {
+      color: #e74c3c;
+      background: rgba(120,30,30,0.2);
+    }
+    .m-life-group {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+    }
+    .m-life-btn {
+      width: 26px;
+      height: 24px;
+      border-radius: 4px;
+      border: 1px solid rgba(80,100,140,0.2);
+      background: rgba(25,35,55,0.6);
+      color: rgba(200,210,230,0.8);
+      font-size: 0.65rem;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+    }
+    .m-life-btn:active {
+      background: rgba(40,55,85,0.8);
+      transform: scale(0.95);
+    }
+    .m-life-btn-minus { color: rgba(231,76,60,0.9); }
+    .m-life-btn-plus { color: rgba(46,204,113,0.9); }
+    .m-stat {
+      font-size: 0.7rem;
+      color: rgba(160,170,195,0.6);
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      white-space: nowrap;
+    }
+    .m-stat .num {
+      font-weight: 700;
+      color: rgba(200,210,230,0.8);
+    }
+    .m-library-stack {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+      background: rgba(25,35,55,0.4);
+      border: 1px solid rgba(80,100,140,0.15);
+    }
+    .m-library-stack:active {
+      background: rgba(40,55,85,0.6);
+    }
+    .m-lib-card {
+      width: 16px;
+      height: 22px;
+      background: linear-gradient(135deg, #1a2540, #253560);
+      border: 1px solid rgba(80,100,150,0.3);
+      border-radius: 2px;
+    }
+    .m-lib-card:not(:first-child) { margin-left: -10px; }
+    .m-lib-count {
+      font-size: 0.68rem;
+      font-weight: 700;
+      color: rgba(180,190,210,0.7);
+    }
+
+    /* Battlefield zones */
+    .m-bf-row {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+      position: relative;
+      background: linear-gradient(180deg, rgba(20,30,55,0.2) 0%, rgba(15,22,40,0.35) 100%);
+    }
+    .m-bf-row + .m-bf-row {
+      border-top: 1px solid rgba(80,100,140,0.1);
+    }
+    .m-bf-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 2px 4px;
+      overflow: hidden;
+      min-width: 0;
+    }
+    .m-bf-creatures, .m-bf-others {
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 0;
+      align-items: flex-start;
+      overflow-x: auto;
+      overflow-y: hidden;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+    }
+    .m-bf-creatures::-webkit-scrollbar,
+    .m-bf-others::-webkit-scrollbar { display: none; }
+    .m-bf-creatures {
+      flex: 1;
+      min-height: 0;
+    }
+    .m-bf-others {
+      flex-shrink: 0;
+      max-height: 50%;
+    }
+    .m-bf-empty {
+      color: rgba(160,170,195,0.15);
+      font-size: 0.6rem;
+      padding: 8px;
+      text-align: center;
+      font-style: italic;
+      align-self: center;
+    }
+
+    /* Zone overlays (graveyard/exile badges) */
+    .m-zone-overlays {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      display: flex;
+      gap: 4px;
+      z-index: 5;
+    }
+    .m-zone-overlays-opp {
+      position: absolute;
+      bottom: 4px;
+      right: 4px;
+      display: flex;
+      gap: 4px;
+      z-index: 5;
+    }
+    .m-zone-badge {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1px;
+      padding: 3px 6px;
+      background: rgba(10,14,26,0.7);
+      border-radius: 5px;
+      border: 1px solid rgba(80,100,140,0.15);
+      cursor: pointer;
+      min-width: 40px;
+    }
+    .m-zone-badge:active {
+      background: rgba(20,28,50,0.85);
+      border-color: rgba(212,160,67,0.3);
+    }
+    .m-zone-badge-count {
+      font-size: 0.65rem;
+      font-weight: 700;
+      color: rgba(200,210,230,0.8);
+    }
+    .m-zone-badge-label {
+      font-size: 0.48rem;
+      color: rgba(160,170,195,0.4);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    /* ========== Cards ========== */
+    .m-card-wrap {
+      flex-shrink: 0;
+      position: relative;
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .m-card {
+      width: 52px;
+      height: 72px;
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+      border: 1px solid rgba(255,255,255,0.1);
+      background: #0a0e1a;
+      cursor: pointer;
+      transition: transform 0.15s, box-shadow 0.15s;
+    }
+    .m-card img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .m-card.tapped {
+      transform: rotate(90deg);
+      transform-origin: center center;
+      margin: 10px 0;
+    }
+    .m-card:active {
+      transform: scale(0.95);
+    }
+    .m-card.tapped:active {
+      transform: rotate(90deg) scale(0.95);
+    }
+    .m-card-name {
+      font-size: 0.45rem;
+      color: rgba(180,190,210,0.5);
+      max-width: 52px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      text-align: center;
+      margin-top: 1px;
+    }
+    .m-card-container {
+      flex-shrink: 0;
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .m-card-container:not(:first-child) {
+      margin-left: 2px;
+    }
+
+    /* Token card */
+    .m-token {
+      border: 1.5px dashed rgba(160,200,160,0.4) !important;
+    }
+
+    /* Counter badges */
+    .m-card-counters {
+      position: absolute;
+      top: 2px;
+      right: 2px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      z-index: 3;
+    }
+    .m-counter-badge {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 14px;
+      height: 14px;
+      border-radius: 4px;
+      font-size: 0.45rem;
+      font-weight: 800;
+      padding: 0 3px;
+      backdrop-filter: blur(6px);
+      border: 1px solid rgba(255,255,255,0.2);
+      text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+    }
+    .m-counter-plus { background: rgba(46,204,113,0.55); color: #d0ffe8; }
+    .m-counter-minus { background: rgba(231,76,60,0.55); color: #ffd8d2; }
+    .m-counter-W { background: rgba(249,250,244,0.5); color: #fff; }
+    .m-counter-U { background: rgba(14,104,171,0.55); color: #c8e6ff; }
+    .m-counter-B { background: rgba(45,40,32,0.65); color: #ddd; }
+    .m-counter-R { background: rgba(211,32,42,0.55); color: #ffd0d0; }
+    .m-counter-G { background: rgba(0,115,62,0.55); color: #c8ffd8; }
+
+    /* Loyalty */
+    .m-loyalty {
+      position: absolute;
+      bottom: 2px;
+      right: 2px;
+      display: flex;
+      align-items: center;
+      gap: 0;
+      z-index: 3;
+      background: rgba(20,15,40,0.6);
+      backdrop-filter: blur(8px);
+      border-radius: 10px;
+      border: 1px solid rgba(140,100,220,0.3);
+      padding: 1px;
+    }
+    .m-loyalty-btn {
+      width: 18px;
+      height: 18px;
+      border-radius: 8px;
+      border: none;
+      font-size: 0.65rem;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      color: rgba(255,255,255,0.8);
+      padding: 0;
+    }
+    .m-loyalty-btn:active { background: rgba(255,255,255,0.15); }
+    .m-loyalty-plus { color: rgba(100,230,150,0.9); }
+    .m-loyalty-minus { color: rgba(240,110,100,0.9); }
+    .m-loyalty-val {
+      font-size: 0.58rem;
+      font-weight: 800;
+      color: #fff;
+      padding: 0 3px;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+    }
+
+    /* Damage marker */
+    .m-damage {
+      position: absolute;
+      bottom: 2px;
+      left: 2px;
+      background: rgba(200,30,30,0.85);
+      color: #fff;
+      font-size: 0.55rem;
+      font-weight: 800;
+      padding: 1px 4px;
+      border-radius: 2px;
+      z-index: 3;
+    }
+
+    /* Action button on cards */
+    .m-card-action-btn {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: rgba(0,0,0,0.6);
+      color: rgba(255,255,255,0.8);
+      font-size: 0.7rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: none;
+      cursor: pointer;
+      z-index: 4;
+      padding: 0;
+      line-height: 1;
+      opacity: 0.7;
+    }
+    .m-card-action-btn:active {
+      opacity: 1;
+      background: rgba(212,160,67,0.6);
+    }
+
+    /* ========== Hand Area ========== */
+    .m-hand {
+      flex-shrink: 0;
+      height: 90px;
+      background: linear-gradient(180deg, rgba(12,18,32,0.7) 0%, rgba(8,12,22,0.95) 100%);
+      border-top: 1px solid rgba(80,100,140,0.1);
+      position: relative;
+      overflow: visible;
+    }
+    .m-hand-label {
+      position: absolute;
+      top: 3px;
+      left: 8px;
+      font-size: 0.55rem;
+      color: rgba(180,190,210,0.35);
+      z-index: 2;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-weight: 600;
+    }
+    .m-hand-inner {
+      display: flex;
+      align-items: center;
+      height: 100%;
+      padding: 20px 8px 4px 8px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      -webkit-overflow-scrolling: touch;
+      gap: 4px;
+      scrollbar-width: none;
+    }
+    .m-hand-inner::-webkit-scrollbar { display: none; }
+    .m-hand-card {
+      width: 46px;
+      height: 64px;
+      border-radius: 3px;
+      overflow: hidden;
+      flex-shrink: 0;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+      border: 1px solid rgba(255,255,255,0.1);
+      background: #0a0e1a;
+      cursor: pointer;
+      position: relative;
+    }
+    .m-hand-card img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .m-hand-card:active {
+      transform: scale(0.95);
+      box-shadow: 0 0 12px rgba(212,160,67,0.4);
+    }
+
+    /* ========== Action Bar ========== */
+    .m-action-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      background: linear-gradient(180deg, rgba(12,16,28,0.95) 0%, rgba(8,12,20,1) 100%);
+      border-top: 1px solid rgba(80,100,140,0.1);
+      flex-shrink: 0;
+      min-height: 36px;
+    }
+    .m-action-btn {
+      padding: 4px 10px;
+      border-radius: 4px;
+      border: 1px solid rgba(80,100,140,0.2);
+      background: rgba(25,35,55,0.6);
+      color: rgba(200,210,230,0.8);
+      font-size: 0.7rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .m-action-btn:active {
+      background: rgba(40,55,85,0.8);
+      transform: scale(0.97);
+    }
+    .m-action-btn-primary {
+      background: rgba(212,160,67,0.2);
+      border-color: rgba(212,160,67,0.3);
+      color: rgba(212,160,67,0.9);
+    }
+    .m-action-btn-danger {
+      color: rgba(231,76,60,0.9);
+      border-color: rgba(231,76,60,0.2);
+    }
+
+    /* ========== Bottom Sheet (Action Menu) ========== */
+    .m-sheet-overlay {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100vw;
+      height: 100vh;
+      height: 100dvh;
+      background: rgba(5,8,15,0.7);
+      z-index: 8000;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      backdrop-filter: blur(2px);
+      animation: m-fade-in 0.15s ease;
+    }
+    .m-sheet-overlay.hidden { display: none; }
+    @keyframes m-fade-in {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    .m-sheet {
+      background: linear-gradient(180deg, #1a2240, #141c35);
+      border: 1px solid rgba(80,100,140,0.25);
+      border-radius: 14px 14px 0 0;
+      width: 100%;
+      max-width: 500px;
+      max-height: 70vh;
+      overflow-y: auto;
+      padding-bottom: env(safe-area-inset-bottom, 8px);
+      animation: m-slide-up 0.2s ease;
+    }
+    @keyframes m-slide-up {
+      from { transform: translateY(100%); }
+      to { transform: translateY(0); }
+    }
+    .m-sheet-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px 8px;
+      border-bottom: 1px solid rgba(80,100,140,0.15);
+    }
+    .m-sheet-title {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: rgba(220,225,240,0.9);
+    }
+    .m-sheet-close {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: none;
+      background: rgba(80,100,140,0.15);
+      color: rgba(160,170,195,0.7);
+      font-size: 1rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .m-sheet-item {
+      padding: 10px 16px;
+      cursor: pointer;
+      color: rgba(220,225,240,0.85);
+      font-size: 0.82rem;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      transition: background 0.1s;
+    }
+    .m-sheet-item:active {
+      background: rgba(212,160,67,0.1);
+    }
+    .m-sheet-separator {
+      height: 1px;
+      background: rgba(80,100,140,0.12);
+      margin: 2px 16px;
+    }
+    .m-sheet-label {
+      padding: 6px 16px 2px;
+      font-size: 0.6rem;
+      color: rgba(160,170,195,0.4);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 600;
+    }
+    .m-sheet-color-dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    /* ========== Card Preview Overlay ========== */
+    .m-preview-overlay {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100vw;
+      height: 100vh;
+      height: 100dvh;
+      background: rgba(5,8,15,0.85);
+      z-index: 7000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(4px);
+      animation: m-fade-in 0.15s ease;
+    }
+    .m-preview-overlay.hidden { display: none; }
+    .m-preview-img {
+      max-width: 85vw;
+      max-height: 85vh;
+      border-radius: 8px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+    }
+
+    /* ========== Zone Modal ========== */
+    .m-zone-modal {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100vw;
+      height: 100vh;
+      height: 100dvh;
+      background: rgba(5,8,15,0.85);
+      z-index: 6000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(4px);
+    }
+    .m-zone-modal.hidden { display: none; }
+    .m-zone-modal-box {
+      background: linear-gradient(180deg, #141c30, #0f1525);
+      border: 1px solid rgba(80,100,140,0.2);
+      border-radius: 10px;
+      width: 90vw;
+      max-width: 600px;
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+    }
+    .m-zone-modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(80,100,140,0.15);
+    }
+    .m-zone-modal-header h3 {
+      color: rgba(220,225,240,0.9);
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin: 0;
+    }
+    .m-zone-modal-close {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: none;
+      background: rgba(80,100,140,0.15);
+      color: rgba(160,170,195,0.7);
+      font-size: 1.2rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .m-zone-modal-body {
+      overflow-y: auto;
+      padding: 10px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      justify-content: center;
+    }
+    .m-zone-modal-card {
+      width: 65px;
+      cursor: pointer;
+    }
+    .m-zone-modal-card img {
+      width: 100%;
+      border-radius: 4px;
+      border: 1px solid rgba(255,255,255,0.12);
+      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    }
+    .m-zone-modal-card:active {
+      transform: scale(0.95);
+    }
+    .m-zone-modal-card-name {
+      font-size: 0.5rem;
+      color: rgba(180,190,210,0.5);
+      text-align: center;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* ========== Win Banner ========== */
+    .m-win-banner {
+      text-align: center;
+      padding: 8px;
+      font-size: 1rem;
+      font-weight: 700;
+      color: #d4a043;
+      background: linear-gradient(180deg, rgba(40,30,10,0.6) 0%, rgba(20,15,5,0.8) 100%);
+      border-top: 1px solid rgba(212,160,67,0.2);
+      flex-shrink: 0;
+    }
+
+    /* ========== Toolbox ========== */
+    .m-toolbox-wrapper {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+    }
+    .m-toolbox-btn {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 1px solid rgba(80,100,140,0.2);
+      background: rgba(25,35,55,0.5);
+      color: rgba(180,190,210,0.7);
+      font-size: 0.85rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .m-toolbox-btn:active {
+      background: rgba(40,55,85,0.7);
+    }
+    .m-toolbox-popup {
+      position: fixed;
+      bottom: 50px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: linear-gradient(180deg, #1a2240, #141c35);
+      border: 1px solid rgba(80,100,140,0.25);
+      border-radius: 10px;
+      padding: 10px;
+      z-index: 5000;
+      display: flex;
+      gap: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+    }
+    .m-toolbox-popup.hidden { display: none; }
+    .m-toolbox-option {
+      padding: 8px 14px;
+      border-radius: 6px;
+      background: rgba(30,40,60,0.6);
+      border: 1px solid rgba(80,100,140,0.15);
+      color: rgba(200,210,230,0.85);
+      font-size: 0.78rem;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .m-toolbox-option:active {
+      background: rgba(212,160,67,0.15);
+      border-color: rgba(212,160,67,0.3);
+    }
+
+    /* Roll animation */
+    .m-roll-overlay {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100vw; height: 100vh;
+      background: rgba(5,8,15,0.8);
+      z-index: 9500;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+    }
+    .m-roll-overlay.hidden { display: none; }
+    .m-roll-number {
+      font-size: 4rem;
+      font-weight: 900;
+      color: #d4a043;
+      text-shadow: 0 0 30px rgba(212,160,67,0.5);
+      animation: m-roll-spin 0.1s linear infinite;
+    }
+    @keyframes m-roll-spin {
+      from { transform: rotate(0deg) scale(1); }
+      50% { transform: rotate(180deg) scale(1.1); }
+      to { transform: rotate(360deg) scale(1); }
+    }
+    .m-roll-label {
+      font-size: 1rem;
+      color: rgba(200,210,230,0.7);
+    }
+
+    /* Toast */
+    #toast-container {
+      position: fixed;
+      top: 8px;
+      right: 8px;
+      z-index: 9999;
+    }
+    .toast {
+      padding: 8px 14px;
+      border-radius: 6px;
+      margin-bottom: 6px;
+      font-size: 0.78rem;
+      animation: toast-in 0.3s ease;
+      max-width: 250px;
+      backdrop-filter: blur(8px);
+    }
+    .toast-success { background: rgba(46,204,113,0.85); color: #fff; }
+    .toast-error { background: rgba(231,76,60,0.85); color: #fff; }
+    .toast-info { background: rgba(52,152,219,0.85); color: #fff; }
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateY(-10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Loading / error */
+    .m-loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-size: 1rem;
+      color: rgba(160,170,195,0.5);
+    }
+    .m-error {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      gap: 12px;
+      color: #e74c3c;
+    }
+
+    /* Hide nav */
+    .navbar, #navbar { display: none !important; }
+
+    /* Stacked cards */
+    .m-stacked-indicator {
+      position: absolute;
+      bottom: -2px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(212,160,67,0.7);
+      color: #fff;
+      font-size: 0.45rem;
+      font-weight: 700;
+      padding: 0 4px;
+      border-radius: 2px;
+      z-index: 4;
+    }
+  </style>
+</head>
+<body>
+  <div id="rotate-hint">
+    <div class="rotate-icon">📱</div>
+    <div>请横屏使用</div>
+    <div style="font-size:0.8rem;opacity:0.5">Please rotate your device to landscape</div>
+  </div>
+
+  <div id="battle-root">
+    <div class="m-loading" id="battle-loading">对战加载中...</div>
+  </div>
+  <div id="toast-container"></div>
+
+  <!-- Card Preview Overlay -->
+  <div id="m-preview" class="m-preview-overlay hidden" onclick="this.classList.add('hidden')">
+    <img id="m-preview-img" class="m-preview-img" src="" alt="">
+  </div>
+
+  <!-- Bottom Sheet -->
+  <div id="m-sheet-overlay" class="m-sheet-overlay hidden" onclick="if(event.target===this)closeMobileSheet()">
+    <div id="m-sheet" class="m-sheet"></div>
+  </div>
+
+  <!-- Zone Modal -->
+  <div id="m-zone-modal" class="m-zone-modal hidden" onclick="if(event.target===this)closeMobileZoneModal()">
+    <div class="m-zone-modal-box">
+      <div class="m-zone-modal-header">
+        <h3 id="m-zone-modal-title">Zone</h3>
+        <button class="m-zone-modal-close" onclick="closeMobileZoneModal()">&times;</button>
+      </div>
+      <div id="m-zone-modal-body" class="m-zone-modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Toolbox popup -->
+  <div id="m-toolbox-popup" class="m-toolbox-popup hidden"></div>
+
+  <!-- Roll overlay -->
+  <div id="m-roll-overlay" class="m-roll-overlay hidden"></div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/app.js"></script>
+  <script>
+    // ========== Mobile Battle Page ==========
+    var _mBattle = null;
+    var _mBattleId = null;
+    var _mMyKey = null;
+    var _mOppKey = null;
+    var _mGs = null;
+
+    // ---- Init ----
+    var params = new URLSearchParams(window.location.search);
+    var battleId = parseInt(params.get('id'));
+    var token = localStorage.getItem('mtg_token');
+
+    if (!battleId) {
+      document.getElementById('battle-loading').innerHTML = '<div class="m-error"><div>缺少对战ID</div><button class="m-action-btn" onclick="window.close()">关闭</button></div>';
+    } else if (!token) {
+      document.getElementById('battle-loading').innerHTML = '<div class="m-error"><div>未登录</div><button class="m-action-btn" onclick="window.location.href=\'/\'">返回首页</button></div>';
+    } else {
+      state.token = token;
+      state.battleId = battleId;
+      state.myKey = null;
+      state.oppKey = null;
+      state.currentPage = 'battle-detail';
+      state.pageData = { id: battleId };
+      currentBattleId = battleId;
+      battleLocalUI.battleId = battleId;
+      _mBattleId = battleId;
+      initMobileBattle();
+    }
+
+    async function initMobileBattle() {
+      try {
+        var me = await api('/api/me');
+        state.user = me;
+        var battle = await api('/api/battles/' + battleId);
+        if (battle.status === 'waiting') {
+          renderMobileWaiting(battle);
+          return;
+        }
+        if (battle.status !== 'in_progress' && battle.status !== 'completed') {
+          document.getElementById('battle-loading').innerHTML = '<div class="m-error"><div>对战状态: ' + battle.status + '</div><button class="m-action-btn" onclick="window.close()">关闭</button></div>';
+          return;
+        }
+        state.myKey = String(battle.player1_id) === String(state.user.id) ? 'p1' : 'p2';
+        state.oppKey = state.myKey === 'p1' ? 'p2' : 'p1';
+        battleLocalUI.myKey = state.myKey;
+        battleLocalUI.oppKey = state.oppKey;
+        _mMyKey = state.myKey;
+        _mOppKey = state.oppKey;
+        _mBattle = battle;
+        renderMobileBattle(battle);
+
+        API.token = state.token;
+        WS.connect();
+        WS.subscribe('battle:' + battleId);
+        // Clear app.js battle_updated handler to prevent PC renderBattleBoard from overwriting mobile UI
+        if (WS.listeners && WS.listeners.has('battle_updated')) {
+          WS.listeners.set('battle_updated', []);
+        }
+        WS.on('battle_updated', handleMobileBattleUpdate);
+      } catch (err) {
+        console.error('initMobileBattle error:', err);
+        document.getElementById('battle-loading').innerHTML = '<div class="m-error"><div>' + escapeHtml(err.message) + '</div><button class="m-action-btn" onclick="window.close()">关闭</button></div>';
+      }
+    }
+
+    async function handleMobileBattleUpdate(data) {
+      if (!data || data.battleId !== battleId) return;
+      if (typeof _battleRefreshing !== 'undefined' && _battleRefreshing) return;
+      try {
+        var battle = await api('/api/battles/' + battleId);
+        _mBattle = battle;
+        renderMobileBattle(battle);
+      } catch (err) {
+        console.error('Battle update error:', err);
+      }
+    }
+
+    function renderMobileWaiting(battle) {
+      var root = document.getElementById('battle-root');
+      var isOwner = String(battle.player1_id) === String(state.user.id);
+      var hasP2 = !!battle.player2_id;
+      root.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:12px">' +
+        '<h2 style="margin:0">' + escapeHtml(battle.name || '对战 #' + battleId) + '</h2>' +
+        '<div style="opacity:0.7">创建者: ' + escapeHtml(battle.player1_name || '玩家1') + '</div>' +
+        (hasP2 ? '<div style="opacity:0.7">对手: ' + escapeHtml(battle.player2_name || '玩家2') + '</div>' : '<div style="color:rgba(160,170,195,0.5)">等待对手加入...</div>') +
+        (!hasP2 && !isOwner ? '<button class="m-action-btn m-action-btn-primary" onclick="joinMobileBattle()">加入对战</button>' : '') +
+        (hasP2 && isOwner && battle.status === 'waiting' ? '<button class="m-action-btn m-action-btn-primary" onclick="startMobileBattle()">开始对战</button>' : '') +
+        '<button class="m-action-btn" onclick="window.close()">返回</button>' +
+        '</div>';
+    }
+
+    async function joinMobileBattle() {
+      try {
+        var decks = await api('/api/decks');
+        if (decks.length === 0) { showToast('请先创建一个牌组', 'error'); return; }
+        var html = '<div style="display:flex;flex-direction:column;gap:8px;padding:12px">' +
+          '<div style="font-size:0.85rem;margin-bottom:4px">选择牌组</div>';
+        decks.forEach(function(d) {
+          html += '<button class="m-action-btn" style="text-align:left;padding:8px 12px" onclick="doJoinMobile(' + d.id + ')">' +
+            escapeHtml(d.name) + ' (' + (Array.isArray(d.main_deck) ? d.main_deck.length : 0) + '张)</button>';
+        });
+        html += '</div>';
+        openMobileSheet('加入对战', html);
+      } catch (err) { showToast(err.message, 'error'); }
+    }
+
+    async function doJoinMobile(deckId) {
+      try {
+        await api('/api/battles/' + battleId + '/join', { method: 'POST', body: JSON.stringify({ deck_id: deckId }) });
+        closeMobileSheet();
+        showToast('已加入对战');
+        setTimeout(function() { location.reload(); }, 1000);
+      } catch (err) { showToast(err.message, 'error'); }
+    }
+
+    async function startMobileBattle() {
+      try {
+        await api('/api/battles/' + battleId + '/start', { method: 'POST' });
+        location.reload();
+      } catch (err) { showToast(err.message, 'error'); }
+    }
+
+    // ========== Main Battle Render ==========
+    function renderMobileBattle(battle) {
+      var gs = battle.game_state;
+      _mGs = gs;
+      var me = gs.players[_mMyKey];
+      var opp = gs.players[_mOppKey];
+      var isMyTurn = gs.activePlayer === _mMyKey;
+
+      battleLocalUI.gs = gs;
+      battleLocalUI.myKey = _mMyKey;
+      battleLocalUI.oppKey = _mOppKey;
+      battleLocalUI.battleId = battleId;
+      battleLocalUI.p1Id = battle.player1_id;
+      battleLocalUI.p2Id = battle.player2_id;
+      battleLocalUI.battleName = battle.name || ('Battle #' + battleId);
+
+      // Win banner
+      var winBanner = '';
+      if (gs.winner) {
+        if (gs.matchOver) {
+          var p1w = gs.player1_wins || battle.player1_wins || 0;
+          var p2w = gs.player2_wins || battle.player2_wins || 0;
+          winBanner = '<div class="m-win-banner">' +
+            (gs.matchWinner === _mMyKey ? '🏆 Match Win!' : '💀 Match Loss') +
+            '<div style="font-size:0.8rem;margin-top:4px;opacity:0.8">' + p1w + ' - ' + p2w + '</div>' +
+            '<button class="m-action-btn m-action-btn-primary" style="margin-top:8px" onclick="mtgaReturnToEvent(' + battleId + ')">← 返回比赛</button></div>';
+        } else {
+          var p1w = gs.player1_wins || battle.player1_wins || 0;
+          var p2w = gs.player2_wins || battle.player2_wins || 0;
+          var gameNum = battle.current_game || 1;
+          winBanner = '<div class="m-win-banner">' +
+            (gs.winner === _mMyKey ? '🎉 Game Win!' : '💀 Game Loss') +
+            '<div style="font-size:0.8rem;margin-top:4px;opacity:0.8">' + p1w + '-' + p2w + ' (Game ' + gameNum + ')</div>' +
+            '<div style="display:flex;gap:6px;justify-content:center;margin-top:8px">' +
+            '<button class="m-action-btn m-action-btn-primary" onclick="mtgaNextGame(' + battleId + ')">下一局 ▶</button>' +
+            '<button class="m-action-btn" onclick="mtgaReturnToEvent(' + battleId + ')">← 返回</button></div></div>';
+        }
+      }
+
+      var root = document.getElementById('battle-root');
+      root.innerHTML = '<div id="content"><div class="m-board">' +
+        // Opponent info bar
+        renderMInfoBar(opp, 'opponent', battleId, true, gs) +
+        // Opponent battlefield
+        '<div class="m-bf-row" id="opp-bf" style="position:relative">' +
+          '<div class="m-bf-content">' + renderMBattlefield(opp?.battlefield, _mOppKey, false) + '</div>' +
+          '<div class="m-zone-overlays-opp">' +
+            renderMZoneBadge('graveyard', opp?.graveyard, _mOppKey) +
+            renderMZoneBadge('exile', opp?.exile, _mOppKey) +
+            renderMZoneBadge('outside_game', opp?.outside_game, _mOppKey) +
+          '</div>' +
+        '</div>' +
+        // My battlefield
+        '<div class="m-bf-row" id="my-bf" style="position:relative">' +
+          '<div class="m-bf-content">' + renderMBattlefield(me?.battlefield, _mMyKey, true) + '</div>' +
+          '<div class="m-zone-overlays">' +
+            renderMZoneBadge('graveyard', me?.graveyard, _mMyKey) +
+            renderMZoneBadge('exile', me?.exile, _mMyKey) +
+            renderMZoneBadge('outside_game', me?.outside_game, _mMyKey) +
+          '</div>' +
+        '</div>' +
+        // My info bar
+        renderMInfoBar(me, 'self', battleId, false, gs) +
+        // My hand
+        '<div class="m-hand" id="my-hand">' +
+          '<div class="m-hand-label">手牌 · ' + (me?.hand || []).length + '</div>' +
+          '<div class="m-hand-inner">' + renderMHandCards(me?.hand || []) + '</div>' +
+        '</div>' +
+      '</div></div>' + winBanner + renderMActionBar(battleId, gs, _mMyKey, battle);
+
+      // Setup mobile touch handlers
+      setupMobileHandlers(battle);
+    }
+
+    // ---- Info bar rendering ----
+    function renderMInfoBar(player, target, bId, isOpp, gs) {
+      var life = player?.life ?? 20;
+      var lifeClass = life <= 5 ? 'm-life low' : 'm-life';
+      var libCount = (player?.library || []).length;
+      var handCount = (player?.hand || []).length;
+
+      var rollHtml = '';
+      if (gs && gs.last_rolls && gs.last_rolls.length > 0) {
+        var lastRoll = gs.last_rolls[gs.last_rolls.length - 1];
+        rollHtml = '<div class="m-stat" style="margin-left:4px">🎲 <span class="num">' + escapeHtml(String(lastRoll.result)) + '</span></div>';
+      }
+
+      return '<div class="m-info-bar">' +
+        '<div class="m-player-name">' + escapeHtml(player?.name || (isOpp ? 'Opponent' : 'Me')) + '</div>' +
+        '<div class="m-life-group">' +
+          '<button class="m-life-btn m-life-btn-minus" onclick="mtgaQuickLife(' + bId + ',\'' + target + '\',-1)">-1</button>' +
+          '<div class="' + lifeClass + '">' + life + '</div>' +
+          '<button class="m-life-btn m-life-btn-plus" onclick="mtgaQuickLife(' + bId + ',\'' + target + '\',1)">+1</button>' +
+        '</div>' +
+        rollHtml +
+        '<div class="m-toolbox-wrapper">' +
+          '<button class="m-toolbox-btn" onclick="toggleMobileToolbox(event)">🎲</button>' +
+        '</div>' +
+        (!isOpp ? '<div class="m-stat" style="margin-left:auto">牌库 <span class="num">' + libCount + '</span></div>' +
+          '<div class="m-library-stack" id="my-library" onclick="mDrawCard()">' +
+            '<div class="m-lib-card"></div><div class="m-lib-card"></div>' +
+            '<span class="m-lib-count">' + libCount + '</span>' +
+          '</div>' :
+          '<div class="m-stat" style="margin-left:auto">手牌 <span class="num">' + handCount + '</span></div>' +
+          '<div class="m-stat">牌库 <span class="num">' + libCount + '</span></div>'
+        ) +
+      '</div>';
+    }
+
+    // ---- Battlefield rendering ----
+    function renderMBattlefield(battlefield, playerKey, isMine) {
+      if (!battlefield || battlefield.length === 0) {
+        return '<div class="m-bf-empty">' + (isMine ? '你的战场' : '对手战场') + '</div>';
+      }
+
+      var creatures = [];
+      var lands = [];
+      var others = [];
+
+      battlefield.forEach(function(card) {
+        var typeLine = (card.type_line || '').toLowerCase();
+        if (typeLine.includes('creature') && !typeLine.includes('land')) {
+          creatures.push(card);
+        } else if (typeLine.includes('land')) {
+          lands.push(card);
+        } else {
+          others.push(card);
+        }
+      });
+
+      var bottomCards = lands.concat(others);
+      var html = '<div class="m-bf-creatures">';
+      if (creatures.length === 0 && bottomCards.length === 0) {
+        html += '<div class="m-bf-empty">空</div>';
+      } else {
+        creatures.forEach(function(card) {
+          html += renderMBattlefieldCard(card, playerKey, isMine);
+        });
+      }
+      html += '</div>';
+
+      if (bottomCards.length > 0) {
+        html += '<div class="m-bf-others">';
+        bottomCards.forEach(function(card) {
+          html += renderMBattlefieldCard(card, playerKey, isMine);
+        });
+        html += '</div>';
+      }
+
+      return html;
+    }
+
+    function renderMBattlefieldCard(card, playerKey, isMine) {
+      var imgSrc = card.image_small || card.image || '';
+      var tapped = card.tapped ? ' tapped' : '';
+      var tokenClass = card.is_token ? ' m-token' : '';
+
+      // Counters
+      var countersHtml = '';
+      if (card.counters) {
+        var badges = '';
+        Object.keys(card.counters).forEach(function(type) {
+          var count = card.counters[type];
+          if (count > 0) {
+            var cls = 'm-counter-badge';
+            if (type === '+1/+1') cls += ' m-counter-plus';
+            else if (type === '-1/-1') cls += ' m-counter-minus';
+            else cls += ' m-counter-' + type;
+            badges += '<div class="' + cls + '">' + type + ' ' + count + '</div>';
+          }
+        });
+        if (badges) countersHtml = '<div class="m-card-counters">' + badges + '</div>';
+      }
+
+      // Loyalty
+      var loyaltyHtml = '';
+      if (card.loyalty !== undefined && card.loyalty !== null && isMine) {
+        loyaltyHtml = '<div class="m-loyalty">' +
+          '<button class="m-loyalty-btn m-loyalty-plus" onclick="event.stopPropagation();mtgaLoyaltyAdjust(\'' + card.id + '\',1)">+</button>' +
+          '<span class="m-loyalty-val">' + card.loyalty + '</span>' +
+          '<button class="m-loyalty-btn m-loyalty-minus" onclick="event.stopPropagation();mtgaLoyaltyAdjust(\'' + card.id + '\',-1)">-</button>' +
+          '</div>';
+      }
+
+      // Damage
+      var damageHtml = '';
+      if (card.damage_marked && card.damage_marked > 0) {
+        damageHtml = '<div class="m-damage">' + card.damage_marked + '</div>';
+      }
+
+      // Action button (for my cards)
+      var actionBtn = '';
+      if (isMine) {
+        actionBtn = '<button class="m-card-action-btn" onclick="event.stopPropagation();showCardActionSheet(\'' + card.id + '\')">⋮</button>';
+      }
+
+      // Stacked indicator
+      var stackHtml = '';
+      if (card.stacked_cards && card.stacked_cards.length > 0) {
+        stackHtml = '<div class="m-stacked-indicator">+' + card.stacked_cards.length + '</div>';
+      }
+
+      var onclick = isMine ? 'onclick="mToggleTap(\'' + card.id + '\',' + (card.tapped ? 'true' : 'false') + ')"' : '';
+      var onpreview = 'oncontextmenu="event.preventDefault();mPreviewCard(\'' + card.id + '\')"';
+
+      return '<div class="m-card-container">' +
+        '<div class="m-card' + tapped + tokenClass + '" data-card-id="' + card.id + '" data-zone="battlefield" data-player="' + playerKey + '" ' + onclick + ' ' + onpreview + '>' +
+          (imgSrc ? '<img src="' + escapeHtml(imgSrc) + '" alt="' + escapeHtml(card.name || '') + '">' : '<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:0.5rem;color:rgba(200,200,200,0.5);padding:2px;text-align:center">' + escapeHtml(card.name || '?') + '</div>') +
+          actionBtn +
+          countersHtml +
+          loyaltyHtml +
+          damageHtml +
+          stackHtml +
+        '</div>' +
+        '<div class="m-card-name">' + escapeHtml(card.name || '') + '</div>' +
+      '</div>';
+    }
+
+    // ---- Hand rendering ----
+    function renderMHandCards(hand) {
+      if (!hand || hand.length === 0) {
+        return '<div style="color:rgba(160,170,195,0.25);font-size:0.65rem;padding:8px;font-style:italic">手牌为空</div>';
+      }
+      var html = '';
+      hand.forEach(function(card) {
+        var imgSrc = card.image_small || card.image || '';
+        html += '<div class="m-hand-card" onclick="mPlayCard(\'' + card.id + '\')" oncontextmenu="event.preventDefault();mHandCardAction(\'' + card.id + '\')">' +
+          (imgSrc ? '<img src="' + escapeHtml(imgSrc) + '" alt="' + escapeHtml(card.name || '') + '">' :
+          '<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:0.45rem;color:rgba(200,200,200,0.5);padding:2px;text-align:center">' + escapeHtml(card.name || '?') + '</div>') +
+        '</div>';
+      });
+      return html;
+    }
+
+    // ---- Action bar ----
+    function renderMActionBar(bId, gs, myKey, battle) {
+      var isMyTurn = gs.activePlayer === myKey;
+      var turnLabel = isMyTurn ? '🎯 Your Turn' : '⏳ Opp';
+      var mullCount = (gs.mulligan_count && gs.mulligan_count[myKey]) || 0;
+
+      return '<div class="m-action-bar">' +
+        '<button class="m-action-btn" onclick="mtgaLeaveBattle(' + bId + ')">←</button>' +
+        '<div class="m-stat">' + turnLabel + '</div>' +
+        '<button class="m-action-btn m-action-btn-primary" onclick="mtgaAction(' + bId + ',{type:\'end_turn\'})">结束回合</button>' +
+        '<button class="m-action-btn" onclick="mtgaAction(' + bId + ',{type:\'draw_card\'})">摸牌</button>' +
+        '<button class="m-action-btn" onclick="mtgaAction(' + bId + ',{type:\'mulligan\'})">调度' + (mullCount > 0 ? '(' + mullCount + ')' : '') + '</button>' +
+        '<button class="m-action-btn" onclick="showMobileTokenMenu()">+衍生物</button>' +
+        '<button class="m-action-btn" onclick="showMobileDeckOptions()">牌库</button>' +
+        '<button class="m-action-btn m-action-btn-danger" style="margin-left:auto" onclick="if(confirm(\'确定认输？\'))mtgaAction(' + bId + ',{type:\'concede\'})">认输</button>' +
+      '</div>';
+    }
+
+    // ---- Zone badges ----
+    function renderMZoneBadge(zoneName, zoneCards, playerKey) {
+      var count = (zoneCards || []).length;
+      var labels = { graveyard: '坟场', exile: '放逐', outside_game: '游戏外' };
+      return '<div class="m-zone-badge" id="' + playerKey + '-' + zoneName + '" onclick="openMobileZoneModal(\'' + zoneName + '\',\'' + playerKey + '\')">' +
+        '<div class="m-zone-badge-count">' + count + '</div>' +
+        '<div class="m-zone-badge-label">' + (labels[zoneName] || zoneName) + '</div>' +
+      '</div>';
+    }
+
+    // ========== Interaction Handlers ==========
+    function setupMobileHandlers(battle) {
+      // Prevent default touch behaviors
+      document.addEventListener('touchmove', function(e) {
+        if (e.target.closest('.m-hand-inner') || e.target.closest('.m-bf-creatures') || e.target.closest('.m-bf-others') || e.target.closest('.m-zone-modal-body')) return;
+        e.preventDefault();
+      }, { passive: false });
+
+      // Library long-press for deck options
+      var libEl = document.getElementById('my-library');
+      if (libEl) {
+        var libTimer = null;
+        var libLong = false;
+        libEl.addEventListener('touchstart', function(e) {
+          libLong = false;
+          libTimer = setTimeout(function() {
+            libLong = true;
+            e.preventDefault();
+            showMobileDeckOptions();
+          }, 500);
+        }, { passive: false });
+        libEl.addEventListener('touchmove', function() { if (libTimer) { clearTimeout(libTimer); libTimer = null; } });
+        libEl.addEventListener('touchend', function(e) { if (libTimer) clearTimeout(libTimer); if (libLong) e.preventDefault(); });
+      }
+    }
+
+    // ---- Tap to play card from hand ----
+    function mPlayCard(cardId) {
+      // Show zone selection sheet
+      var html = '<div style="padding:8px">' +
+        '<div class="m-sheet-item" onclick="doPlayCardTo(\'' + cardId + '\',\'battlefield\')">⚔️ 置入战场</div>' +
+        '<div class="m-sheet-item" onclick="doPlayCardTo(\'' + cardId + '\',\'graveyard\')">💀 置入坟场</div>' +
+        '<div class="m-sheet-item" onclick="doPlayCardTo(\'' + cardId + '\',\'exile\')">🚫 放逐</div>' +
+        '<div class="m-sheet-item" onclick="doPlayCardTo(\'' + cardId + '\',\'outside_game\')">📦 游戏外</div>' +
+        '</div>';
+      openMobileSheet('使用卡牌', html);
+    }
+
+    function doPlayCardTo(cardId, toZone) {
+      closeMobileSheet();
+      mtgaAction(_mBattleId, { type: 'move_card', card_id: cardId, from_zone: 'hand', to_zone: toZone });
+    }
+
+    // ---- Hand card action (long press alternative) ----
+    function mHandCardAction(cardId) {
+      mPlayCard(cardId);
+    }
+
+    // ---- Tap battlefield card to toggle tap/untap ----
+    function mToggleTap(cardId, isTapped) {
+      if (isTapped) {
+        mtgaAction(_mBattleId, { type: 'untap_card', card_id: cardId });
+      } else {
+        mtgaAction(_mBattleId, { type: 'tap_card', card_id: cardId });
+      }
+    }
+
+    // ---- Draw card ----
+    function mDrawCard() {
+      mtgaAction(_mBattleId, { type: 'draw_card' });
+    }
+
+    // ---- Preview card ----
+    function mPreviewCard(cardId) {
+      var gs = _mGs;
+      if (!gs) return;
+      var allCards = [];
+      ['p1', 'p2'].forEach(function(pk) {
+        var p = gs.players[pk];
+        if (p) {
+          allCards = allCards.concat(p.battlefield || [], p.hand || [], p.graveyard || [], p.exile || [], p.outside_game || []);
+        }
+      });
+      var card = allCards.find(function(c) { return String(c.id) === String(cardId); });
+      if (!card) return;
+      var img = card.image || card.image_small || '';
+      if (!img) return;
+      var previewEl = document.getElementById('m-preview');
+      var imgEl = document.getElementById('m-preview-img');
+      imgEl.src = img;
+      previewEl.classList.remove('hidden');
+    }
+
+    // ========== Card Action Sheet ==========
+    function showCardActionSheet(cardId) {
+      var gs = _mGs;
+      if (!gs) return;
+      var me = gs.players[_mMyKey];
+      var card = (me?.battlefield || []).find(function(c) { return String(c.id) === String(cardId); });
+      if (!card) return;
+
+      var html = '<div style="padding:4px 0">';
+
+      // Token toggle
+      if (card.is_token) {
+        html += '<div class="m-sheet-item" onclick="closeMobileSheet();mtgaAction(' + _mBattleId + ',{type:\'toggle_token_type\',card_id:\'' + cardId + '\'})">🔄 切换生物/非生物</div>';
+      }
+
+      // Flip card (DFC)
+      if (card.image_back || card.is_transformed) {
+        html += '<div class="m-sheet-item" onclick="closeMobileSheet();toggleCardFlip(\'' + cardId + '\')">🔃 翻转卡牌</div>';
+      }
+
+      html += '<div class="m-sheet-separator"></div>';
+      html += '<div class="m-sheet-label">添加指示物</div>';
+
+      // Add counters
+      var counterTypes = [
+        { type: '+1/+1', label: '+1/+1', color: 'rgba(46,204,113,0.55)' },
+        { type: '-1/-1', label: '-1/-1', color: 'rgba(231,76,60,0.55)' },
+        { type: 'W', label: '⚪ 白', color: 'rgba(249,250,244,0.5)' },
+        { type: 'U', label: '🔵 蓝', color: 'rgba(14,104,171,0.55)' },
+        { type: 'B', label: '⚫ 黑', color: 'rgba(45,40,32,0.65)' },
+        { type: 'R', label: '🔴 红', color: 'rgba(211,32,42,0.55)' },
+        { type: 'G', label: '🟢 绿', color: 'rgba(0,115,62,0.55)' }
+      ];
+      counterTypes.forEach(function(ct) {
+        html += '<div class="m-sheet-item" onclick="closeMobileSheet();mtgaAction(' + _mBattleId + ',{type:\'add_counter\',card_id:\'' + cardId + '\',counter_type:\'' + ct.type + '\'})">' +
+          '<span class="m-sheet-color-dot" style="background:' + ct.color + '"></span>' + ct.label + '</div>';
+      });
+
+      // Remove counters (if any)
+      if (card.counters) {
+        var hasCounters = false;
+        Object.keys(card.counters).forEach(function(type) {
+          if (card.counters[type] > 0) hasCounters = true;
+        });
+        if (hasCounters) {
+          html += '<div class="m-sheet-separator"></div>';
+          html += '<div class="m-sheet-label">移除指示物</div>';
+          Object.keys(card.counters).forEach(function(type) {
+            if (card.counters[type] > 0) {
+              html += '<div class="m-sheet-item" onclick="closeMobileSheet();mtgaAction(' + _mBattleId + ',{type:\'remove_counter\',card_id:\'' + cardId + '\',counter_type:\'' + type + '\'})">➖ ' + type + ' (' + card.counters[type] + ')</div>';
+            }
+          });
+        }
+      }
+
+      html += '<div class="m-sheet-separator"></div>';
+      html += '<div class="m-sheet-label">移动到</div>';
+
+      // Move to zones
+      var zones = [
+        { zone: 'hand', label: '✋ 手牌' },
+        { zone: 'graveyard', label: '💀 坟场' },
+        { zone: 'exile', label: '🚫 放逐' },
+        { zone: 'library', label: '📚 牌库顶' },
+        { zone: 'outside_game', label: '📦 游戏外' }
+      ];
+      zones.forEach(function(z) {
+        html += '<div class="m-sheet-item" onclick="closeMobileSheet();mtgaAction(' + _mBattleId + ',{type:\'move_card\',card_id:\'' + cardId + '\',from_zone:\'battlefield\',to_zone:\'' + z.zone + '\'})">' + z.label + '</div>';
+      });
+
+      // Transfer control to opponent
+      html += '<div class="m-sheet-separator"></div>';
+      html += '<div class="m-sheet-label">转移控制权</div>';
+      html += '<div class="m-sheet-item" onclick="closeMobileSheet();mtgaAction(' + _mBattleId + ',{type:\'transfer_control\',card_id:\'' + cardId + '\',from_zone:\'battlefield\',to_zone:\'battlefield\'})">⚔️ 对手战场</div>';
+      html += '<div class="m-sheet-item" onclick="closeMobileSheet();mtgaAction(' + _mBattleId + ',{type:\'transfer_control\',card_id:\'' + cardId + '\',from_zone:\'battlefield\',to_zone:\'graveyard\'})">💀 对手坟场</div>';
+
+      // Remove token
+      if (card.is_token) {
+        html += '<div class="m-sheet-separator"></div>';
+        html += '<div class="m-sheet-item" style="color:rgba(231,76,60,0.9)" onclick="closeMobileSheet();mtgaAction(' + _mBattleId + ',{type:\'move_card\',card_id:\'' + cardId + '\',from_zone:\'battlefield\',to_zone:\'graveyard\'})">🗑 移除衍生物</div>';
+      }
+
+      // Stack on another card
+      var otherCards = (me?.battlefield || []).filter(function(c) { return String(c.id) !== String(cardId); });
+      if (otherCards.length > 0) {
+        html += '<div class="m-sheet-separator"></div>';
+        html += '<div class="m-sheet-label">叠放在</div>';
+        otherCards.slice(0, 10).forEach(function(c) {
+          html += '<div class="m-sheet-item" onclick="closeMobileSheet();mtgaAction(' + _mBattleId + ',{type:\'stack_card\',card_id:\'' + cardId + '\',target_card_id:\'' + c.id + '\'})">📎 ' + escapeHtml(c.name || '未知') + '</div>';
+        });
+      }
+
+      // Unstack (if stacked)
+      if (card.stacked_cards && card.stacked_cards.length > 0) {
+        html += '<div class="m-sheet-separator"></div>';
+        html += '<div class="m-sheet-label">取消叠放</div>';
+        html += '<div class="m-sheet-item" onclick="closeMobileSheet();mtgaAction(' + _mBattleId + ',{type:\'unstack_card\',card_id:\'' + cardId + '\',target_zone:\'battlefield\'})">📤 分离卡牌</div>';
+      }
+
+      html += '</div>';
+      openMobileSheet(card.name || '卡牌操作', html);
+    }
+
+    // ========== Token Creation Menu ==========
+    function showMobileTokenMenu() {
+      var html = '<div style="padding:4px 0">';
+      var tokens = [
+        { name: '1/1 生物', p: 1, t: 1, c: true },
+        { name: '2/2 生物', p: 2, t: 2, c: true },
+        { name: '3/3 生物', p: 3, t: 3, c: true },
+        { name: '4/4 生物', p: 4, t: 4, c: true }
+      ];
+      tokens.forEach(function(tk) {
+        html += '<div class="m-sheet-item" onclick="closeMobileSheet();mtgaAction(' + _mBattleId + ',{type:\'create_token\',name:\'' + tk.name + '\',power:' + tk.p + ',toughness:' + tk.t + ',is_creature:' + tk.c + '})">🧬 ' + tk.name + '</div>';
+      });
+      html += '<div class="m-sheet-item" onclick="closeMobileSheet();mtgaAction(' + _mBattleId + ',{type:\'create_token\',name:\'非生物衍生物\',power:0,toughness:0,is_creature:false})">📦 非生物衍生物</div>';
+      html += '<div class="m-sheet-item" onclick="closeMobileSheet();showCustomTokenForm()">✏️ 自定义衍生物</div>';
+      html += '</div>';
+      openMobileSheet('创建衍生物', html);
+    }
+
+    function showCustomTokenForm() {
+      var html = '<div style="padding:12px;display:flex;flex-direction:column;gap:8px">' +
+        '<input id="ct-name" placeholder="名称" class="m-action-btn" style="padding:8px;text-align:left;font-size:0.85rem">' +
+        '<div style="display:flex;gap:8px">' +
+          '<input id="ct-power" type="number" placeholder="力量" value="0" class="m-action-btn" style="flex:1;padding:8px;text-align:center">' +
+          '<input id="ct-toughness" type="number" placeholder="防御" value="0" class="m-action-btn" style="flex:1;padding:8px;text-align:center">' +
+        '</div>' +
+        '<label style="display:flex;align-items:center;gap:8px;font-size:0.8rem;color:rgba(200,210,230,0.8)">' +
+          '<input id="ct-creature" type="checkbox" checked> 生物' +
+        '</label>' +
+        '<button class="m-action-btn m-action-btn-primary" onclick="createCustomToken()">创建</button>' +
+      '</div>';
+      openMobileSheet('自定义衍生物', html);
+    }
+
+    function createCustomToken() {
+      var name = document.getElementById('ct-name').value.trim() || '自定义衍生物';
+      var power = parseInt(document.getElementById('ct-power').value) || 0;
+      var toughness = parseInt(document.getElementById('ct-toughness').value) || 0;
+      var isCreature = document.getElementById('ct-creature').checked;
+      closeMobileSheet();
+      mtgaAction(_mBattleId, { type: 'create_token', name: name, power: power, toughness: toughness, is_creature: isCreature, is_custom: true });
+    }
+
+    // ========== Deck Options ==========
+    function showMobileDeckOptions() {
+      var libCount = (_mGs?.players[_mMyKey]?.library || []).length;
+      var html = '<div style="padding:4px 0">' +
+        '<div class="m-sheet-item" onclick="closeMobileSheet();showMobileDeckPreview()">🔍 预览牌库 (' + libCount + '张)</div>' +
+        '<div class="m-sheet-item" onclick="closeMobileSheet();showMobileDeckPreviewPrompt()">👁 预览指定数量</div>' +
+        '<div class="m-sheet-item" onclick="closeMobileSheet();showMobileRevealPrompt()">👀 向对手展示</div>' +
+        '<div class="m-sheet-item" onclick="closeMobileSheet();mtgaAction(' + _mBattleId + ',{type:\'shuffle_library\'})">🔀 洗牌</div>' +
+      '</div>';
+      openMobileSheet('牌库操作', html);
+    }
+
+    function showMobileDeckPreview() {
+      var gs = _mGs;
+      if (!gs) return;
+      showDeckPreviewModal(gs, _mMyKey, _mBattleId, 0, false);
+    }
+
+    function showMobileDeckPreviewPrompt() {
+      var gs = _mGs;
+      if (!gs) return;
+      var libCount = (gs.players[_mMyKey]?.library || []).length;
+      var count = prompt('预览牌库顶几张？(1-' + libCount + ')', Math.min(7, libCount));
+      if (!count) return;
+      var n = parseInt(count);
+      if (!n || n < 1 || n > libCount) { showToast('无效数量', 'error'); return; }
+      showDeckPreviewModal(gs, _mMyKey, _mBattleId, n, false);
+    }
+
+    function showMobileRevealPrompt() {
+      var count = prompt('向对手展示牌库顶几张？', '3');
+      if (!count) return;
+      var n = parseInt(count);
+      if (!n || n < 1) return;
+      mtgaAction(_mBattleId, { type: 'show_library_cards', count: n });
+    }
+
+    // ========== Toolbox (Dice/Coin) ==========
+    function toggleMobileToolbox(e) {
+      e.stopPropagation();
+      var popup = document.getElementById('m-toolbox-popup');
+      if (popup.classList.contains('hidden')) {
+        popup.innerHTML = '<div class="m-toolbox-option" onclick="mRollDice(\'coin\')">🪙 硬币</div>' +
+          '<div class="m-toolbox-option" onclick="mRollDice(\'d6\')">🎲 D6</div>' +
+          '<div class="m-toolbox-option" onclick="mRollDice(\'d20\')">🎯 D20</div>' +
+          '<div class="m-toolbox-option" onclick="mRollCustom()">❓ D?</div>';
+        popup.classList.remove('hidden');
+        // Auto-hide after click elsewhere
+        setTimeout(function() {
+          document.addEventListener('click', function handler() {
+            popup.classList.add('hidden');
+            document.removeEventListener('click', handler);
+          });
+        }, 50);
+      } else {
+        popup.classList.add('hidden');
+      }
+    }
+
+    function mRollDice(type) {
+      document.getElementById('m-toolbox-popup').classList.add('hidden');
+      mtgaAction(_mBattleId, { type: 'random_roll', roll_type: type }).then(function() {
+        showRollAnimation(type);
+      });
+    }
+
+    function mRollCustom() {
+      document.getElementById('m-toolbox-popup').classList.add('hidden');
+      var max = prompt('自定义骰子面数 (2-1000)', '100');
+      if (!max) return;
+      var n = parseInt(max);
+      if (!n || n < 2 || n > 1000) return;
+      mtgaAction(_mBattleId, { type: 'random_roll', roll_type: 'custom', custom_max: n }).then(function() {
+        showRollAnimation('d' + n);
+      });
+    }
+
+    function showRollAnimation(type) {
+      var overlay = document.getElementById('m-roll-overlay');
+      var labels = { coin: '抛硬币', d6: 'D6', d20: 'D20' };
+      var label = labels[type] || type;
+      overlay.innerHTML = '<div class="m-roll-label">' + label + '</div><div class="m-roll-number" id="m-roll-num">...</div>';
+      overlay.classList.remove('hidden');
+
+      var count = 0;
+      var interval = setInterval(function() {
+        var num = document.getElementById('m-roll-num');
+        if (num) {
+          if (type === 'coin') {
+            num.textContent = Math.random() > 0.5 ? '正' : '反';
+          } else {
+            num.textContent = Math.floor(Math.random() * 100) + 1;
+          }
+        }
+        count++;
+        if (count > 10) {
+          clearInterval(interval);
+          // Show final result from game state
+          if (_mGs && _mGs.last_rolls && _mGs.last_rolls.length > 0) {
+            var last = _mGs.last_rolls[_mGs.last_rolls.length - 1];
+            var num = document.getElementById('m-roll-num');
+            if (num) {
+              num.style.animation = 'none';
+              num.textContent = last.result;
+            }
+          }
+          setTimeout(function() {
+            overlay.classList.add('hidden');
+          }, 1500);
+        }
+      }, 100);
+    }
+
+    // ========== Zone Modal ==========
+    function openMobileZoneModal(zoneName, playerKey) {
+      var gs = _mGs;
+      if (!gs) return;
+      var player = gs.players[playerKey];
+      if (!player) return;
+      var cards = player[zoneName] || [];
+      var labels = { graveyard: '坟场', exile: '放逐区', outside_game: '游戏外' };
+      var title = (playerKey === _mMyKey ? '我的 ' : '对手 ') + (labels[zoneName] || zoneName) + ' (' + cards.length + ')';
+
+      var body = document.getElementById('m-zone-modal-body');
+      var titleEl = document.getElementById('m-zone-modal-title');
+      titleEl.textContent = title;
+
+      if (cards.length === 0) {
+        body.innerHTML = '<div style="color:rgba(160,170,195,0.4);font-size:0.8rem;padding:20px">空</div>';
+      } else {
+        var html = '';
+        cards.forEach(function(card) {
+          var imgSrc = card.image_small || card.image || '';
+          html += '<div class="m-zone-modal-card" onclick="zoneCardAction(\'' + card.id + '\',\'' + zoneName + '\',\'' + playerKey + '\')">' +
+            (imgSrc ? '<img src="' + escapeHtml(imgSrc) + '" alt="' + escapeHtml(card.name || '') + '">' :
+            '<div style="width:100%;height:90px;background:rgba(20,30,50,0.6);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.6rem;color:rgba(200,200,200,0.5);text-align:center;padding:4px">' + escapeHtml(card.name || '?') + '</div>') +
+            '<div class="m-zone-modal-card-name">' + escapeHtml(card.name || '') + '</div>' +
+          '</div>';
+        });
+        body.innerHTML = html;
+      }
+
+      document.getElementById('m-zone-modal').classList.remove('hidden');
+    }
+
+    function zoneCardAction(cardId, fromZone, playerKey) {
+      closeMobileZoneModal();
+      if (playerKey !== _mMyKey) {
+        // Opponent's zone - just preview
+        mPreviewCard(cardId);
+        return;
+      }
+      // My zone - show move options
+      var html = '<div style="padding:4px 0">';
+      var zones = [
+        { zone: 'battlefield', label: '⚔️ 战场' },
+        { zone: 'hand', label: '✋ 手牌' },
+        { zone: 'exile', label: '🚫 放逐' },
+        { zone: 'library', label: '📚 牌库顶' },
+        { zone: 'outside_game', label: '📦 游戏外' }
+      ];
+      zones.filter(function(z) { return z.zone !== fromZone; }).forEach(function(z) {
+        html += '<div class="m-sheet-item" onclick="closeMobileSheet();mtgaAction(' + _mBattleId + ',{type:\'move_card\',card_id:\'' + cardId + '\',from_zone:\'' + fromZone + '\',to_zone:\'' + z.zone + '\'})">' + z.label + '</div>';
+      });
+      html += '</div>';
+      openMobileSheet('移动卡牌', html);
+    }
+
+    function closeMobileZoneModal() {
+      document.getElementById('m-zone-modal').classList.add('hidden');
+    }
+
+    // ========== Bottom Sheet ==========
+    function openMobileSheet(title, contentHtml) {
+      var sheet = document.getElementById('m-sheet');
+      sheet.innerHTML = '<div class="m-sheet-header">' +
+        '<div class="m-sheet-title">' + escapeHtml(title) + '</div>' +
+        '<button class="m-sheet-close" onclick="closeMobileSheet()">&times;</button>' +
+      '</div>' + contentHtml;
+      document.getElementById('m-sheet-overlay').classList.remove('hidden');
+    }
+
+    function closeMobileSheet() {
+      document.getElementById('m-sheet-overlay').classList.add('hidden');
+    }
+
+    // ========== Override PC rendering to use mobile UI ==========
+    // mtgaAction in app.js calls mtgaRenderBoard which uses PC renderBattleBoard.
+    // Override it to use our mobile renderer instead.
+    function mtgaRenderBoard(bId, battle) {
+      _mBattle = battle;
+      renderMobileBattle(battle);
+    }
+
+    // Also override mtgaRefreshBoard (fetches fresh data then re-renders)
+    function mtgaRefreshBoard(bId) {
+      api('/api/battles/' + bId).then(function(battle) {
+        _mBattle = battle;
+        renderMobileBattle(battle);
+      }).catch(function() {});
+    }
+
+    // ========== Leave battle overrides ==========
+    function mtgaLeaveBattle(id) {
+      if (WS) {
+        WS.unsubscribe('battle:' + id);
+        WS.disconnect();
+      }
+      window.close();
+      setTimeout(function() { window.location.href = '/'; }, 500);
+    }
+
+    async function mtgaReturnToEvent(bId) {
+      try {
+        var battle = await api('/api/battles/' + bId);
+        var eventId = battle.event_id;
+        if (WS) { WS.unsubscribe('battle:' + bId); WS.disconnect(); }
+        if (eventId) window.location.href = '/events/' + eventId;
+        else mtgaLeaveBattle(bId);
+      } catch(err) { mtgaLeaveBattle(bId); }
+    }
+  </script>
+</body>
+</html>
