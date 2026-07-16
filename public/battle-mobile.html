@@ -28,7 +28,7 @@
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      padding-bottom: env(safe-area-inset-bottom, 0px);
+      box-sizing: border-box;
     }
     #content {
       flex: 1;
@@ -921,10 +921,21 @@
 </head>
 <body>
   <script>
-    // Fix iOS Chrome 100dvh bug: dvh includes home indicator area causing
-    // bottom content to be obscured. Setting height in explicit pixels via
-    // window.innerHeight bypasses the unreliable dvh unit.
+    // Fix iOS Chrome 100dvh bug: dvh includes home indicator area.
+    // We set explicit pixel height via innerHeight + box-sizing:border-box
+    // so padding is included in the height, keeping action bar visible.
     (function() {
+      function getSafeAreaBottom() {
+        try {
+          var probe = document.createElement('div');
+          probe.style.cssText = 'position:fixed;bottom:0;left:0;height:env(safe-area-inset-bottom,0px);pointer-events:none;visibility:hidden';
+          document.body.appendChild(probe);
+          var val = probe.offsetHeight;
+          document.body.removeChild(probe);
+          return val;
+        } catch(e) { return 0; }
+      }
+
       function applyHeight() {
         var root = document.getElementById('battle-root');
         if (!root) return;
@@ -932,13 +943,19 @@
         var fs = !!(document.fullscreenElement || document.webkitFullscreenElement);
         if (fs) {
           root.style.height = '100dvh';
+          root.style.paddingBottom = '0px';
           return;
         }
 
-        // window.innerHeight is the actual visible viewport height in pixels.
-        // On iOS it correctly excludes the browser toolbar.
-        // We set this explicitly to bypass 100dvh bugs on iOS Chrome/Safari.
+        // Set height to innerHeight (the real visible viewport).
+        // With box-sizing:border-box, padding is included in this height.
         root.style.height = window.innerHeight + 'px';
+
+        // Add safe-area padding so action bar clears home indicator / nav bar.
+        // Since border-box includes padding in height, content area shrinks
+        // by this amount — but the action bar stays fully visible.
+        var safeArea = getSafeAreaBottom();
+        root.style.paddingBottom = safeArea + 'px';
       }
 
       if (document.readyState === 'loading') {
@@ -947,7 +964,6 @@
         applyHeight();
       }
 
-      // Re-apply on resize, orientation change, fullscreen toggle
       window.addEventListener('resize', applyHeight);
       window.addEventListener('orientationchange', function() { setTimeout(applyHeight, 200); });
       document.addEventListener('fullscreenchange', function() { setTimeout(applyHeight, 100); });
