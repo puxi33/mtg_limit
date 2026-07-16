@@ -22,13 +22,29 @@
       user-select: none;
       -webkit-user-select: none;
     }
+    /* Force landscape orientation */
+    @media screen and (orientation: portrait) {
+      #battle-root {
+        width: 100vh;
+        height: 100vw;
+        transform: rotate(90deg);
+        transform-origin: top left;
+        position: absolute;
+        top: 0;
+        left: 100%;
+      }
+    }
+    @media screen and (orientation: landscape) {
+      #battle-root {
+        width: 100vw;
+        height: 100vh;
+        height: 100dvh;
+      }
+    }
     #battle-root {
-      width: 100vw;
-      height: 100dvh;
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      box-sizing: border-box;
     }
     #content {
       flex: 1;
@@ -921,55 +937,10 @@
 </head>
 <body>
   <script>
-    // Fix iOS Chrome 100dvh bug: dvh includes home indicator area.
-    // We set explicit pixel height via innerHeight + box-sizing:border-box
-    // so padding is included in the height, keeping action bar visible.
+    // Try to lock screen to landscape orientation
     (function() {
-      function getSafeAreaBottom() {
-        try {
-          var probe = document.createElement('div');
-          probe.style.cssText = 'position:fixed;bottom:0;left:0;height:env(safe-area-inset-bottom,0px);pointer-events:none;visibility:hidden';
-          document.body.appendChild(probe);
-          var val = probe.offsetHeight;
-          document.body.removeChild(probe);
-          return val;
-        } catch(e) { return 0; }
-      }
-
-      function applyHeight() {
-        var root = document.getElementById('battle-root');
-        if (!root) return;
-
-        var fs = !!(document.fullscreenElement || document.webkitFullscreenElement);
-        if (fs) {
-          root.style.height = '100dvh';
-          root.style.paddingBottom = '0px';
-          return;
-        }
-
-        // Set height to innerHeight (the real visible viewport).
-        // With box-sizing:border-box, padding is included in this height.
-        root.style.height = window.innerHeight + 'px';
-
-        // Add safe-area padding so action bar clears home indicator / nav bar.
-        // Since border-box includes padding in height, content area shrinks
-        // by this amount — but the action bar stays fully visible.
-        var safeArea = getSafeAreaBottom();
-        root.style.paddingBottom = safeArea + 'px';
-      }
-
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', applyHeight);
-      } else {
-        applyHeight();
-      }
-
-      window.addEventListener('resize', applyHeight);
-      window.addEventListener('orientationchange', function() { setTimeout(applyHeight, 200); });
-      document.addEventListener('fullscreenchange', function() { setTimeout(applyHeight, 100); });
-      document.addEventListener('webkitfullscreenchange', function() { setTimeout(applyHeight, 100); });
-      if (window.visualViewport) {
-        window.visualViewport.addEventListener('resize', applyHeight);
+      if (screen.orientation && screen.orientation.lock) {
+        screen.orientation.lock('landscape').catch(function() {});
       }
     })();
   </script>
