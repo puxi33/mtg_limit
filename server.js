@@ -12,6 +12,7 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const url = require('url');
+const multer = require('multer');
 const { WebSocketServer } = require('ws');
 const { song_url, song_detail, search } = require('NeteaseCloudMusicApi');
 
@@ -524,6 +525,39 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (player1_id) REFERENCES users(id),
     FOREIGN KEY (player2_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    remark TEXT DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    remark TEXT DEFAULT '',
+    completed INTEGER DEFAULT 0,
+    sort_order INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    step_id INTEGER NOT NULL,
+    filename TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    mime_type TEXT DEFAULT '',
+    size INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (step_id) REFERENCES steps(id) ON DELETE CASCADE
   );
 `);
 
@@ -3557,6 +3591,298 @@ app.get('/api/guessSong/reveal', (req, res) => {
 
 // Legacy redirect
 app.get('/guessAnime', (req, res) => res.redirect('/guessSong'));
+
+// ============================================================
+// Project Management Independent Page
+// ============================================================
+app.get('/projects', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'projects.html'));
+});
+
+app.get('/projects/:id', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'projects.html'));
+});
+
+// ============================================================
+// Project Management API
+// ============================================================
+// Multer configuration for file uploads
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: uploadDir,
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    // Preserve original filename with proper encoding
+    const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8');
+    cb(null, uniqueSuffix + '-' + originalName);
+  },
+});
+const upload = multer({ 
+  storage,
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    // Decode filename properly
+    file.originalname = Buffer.from(file.originalname, 'latin1').toString('utf8');
+    cb(null, true);
+  }
+});
+
+// Serve uploaded files
+app.use('/uploads', express.static(uploadDir));
+
+// Get all projects for current user
+app.get('/api/projects', authMiddleware, (req, res) => {
+  const projects = db.prepare(`
+    SELECT p.*,
+      COUNT(s.id) as total_steps,
+      SUM(CASE WHEN s.completed = 1 THEN 1 ELSE 0 END) as completed_steps
+    FROM projects p
+    LEFT JOIN steps s ON s.project_id = p.id
+    WHERE p.user_id = ?
+    GROUP BY p.id
+    ORDER BY p.created_at DESC
+  `).all(req.user.id);
+
+  const stepsByProject = db.prepare(`
+    SELECT id, project_id, name, remark, completed, sort_order
+    FROM steps
+    WHERE project_id IN (SELECT id FROM projects WHERE user_id = ?)
+    ORDER BY sort_order ASC, created_at ASC
+  `).all(req.user.id);
+
+  const stepsMap = {};
+  for (const step of stepsByProject) {
+    if (!stepsMap[step.project_id]) stepsMap[step.project_id] = [];
+    stepsMap[step.project_id].push(step);
+  }
+
+  const result = projects.map(p => ({
+    ...p,
+    steps: stepsMap[p.id] || [],
+  }));
+
+  res.json(result);
+});
+
+// Get single project with steps and attachments
+app.get('/api/projects/:id', authMiddleware, (req, res) => {
+  const project = db.prepare(`
+    SELECT p.*,
+      COUNT(s.id) as total_steps,
+      SUM(CASE WHEN s.completed = 1 THEN 1 ELSE 0 END) as completed_steps
+    FROM projects p
+    LEFT JOIN steps s ON s.project_id = p.id
+    WHERE p.id = ? AND p.user_id = ?
+    GROUP BY p.id
+  `).get(req.params.id, req.user.id);
+
+  if (!project) return res.status(404).json({ error: '项目不存在' });
+
+  const steps = db.prepare(`
+    SELECT * FROM steps WHERE project_id = ? ORDER BY sort_order ASC, created_at ASC
+  `).all(project.id);
+
+  const stepIds = steps.map(s => s.id);
+  const attachments = stepIds.length
+    ? db.prepare(`SELECT * FROM attachments WHERE step_id IN (${stepIds.join(',')})`).all()
+    : [];
+
+  const attachMap = {};
+  for (const a of attachments) {
+    if (!attachMap[a.step_id]) attachMap[a.step_id] = [];
+    attachMap[a.step_id].push(a);
+  }
+
+  const stepsWithAttachments = steps.map(s => ({
+    ...s,
+    completed: !!s.completed,
+    attachments: attachMap[s.id] || [],
+  }));
+
+  res.json({ ...project, steps: stepsWithAttachments });
+});
+
+// Create project
+app.post('/api/projects', authMiddleware, (req, res) => {
+  const { name, remark } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: '项目名称不能为空' });
+
+  const result = db.prepare('INSERT INTO projects (user_id, name, remark) VALUES (?, ?, ?)')
+    .run(req.user.id, name.trim(), remark || '');
+  const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(result.lastInsertRowid);
+
+  res.status(201).json({ ...project, steps: [] });
+});
+
+// Update project
+app.put('/api/projects/:id', authMiddleware, (req, res) => {
+  const { name, remark } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: '项目名称不能为空' });
+
+  const existing = db.prepare('SELECT * FROM projects WHERE id = ? AND user_id = ?')
+    .get(req.params.id, req.user.id);
+  if (!existing) return res.status(404).json({ error: '项目不存在' });
+
+  db.prepare('UPDATE projects SET name = ?, remark = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+    .run(name.trim(), remark || '', req.params.id);
+
+  const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
+  res.json(project);
+});
+
+// Delete project
+app.delete('/api/projects/:id', authMiddleware, (req, res) => {
+  const existing = db.prepare('SELECT * FROM projects WHERE id = ? AND user_id = ?')
+    .get(req.params.id, req.user.id);
+  if (!existing) return res.status(404).json({ error: '项目不存在' });
+
+  db.prepare('DELETE FROM projects WHERE id = ?').run(req.params.id);
+  res.json({ success: true });
+});
+
+// Get steps for project
+app.get('/api/projects/:projectId/steps', authMiddleware, (req, res) => {
+  const project = db.prepare('SELECT id FROM projects WHERE id = ? AND user_id = ?')
+    .get(req.params.projectId, req.user.id);
+  if (!project) return res.status(404).json({ error: '项目不存在' });
+
+  const steps = db.prepare('SELECT * FROM steps WHERE project_id = ? ORDER BY sort_order ASC, created_at ASC')
+    .all(req.params.projectId);
+
+  const stepIds = steps.map(s => s.id);
+  const attachments = stepIds.length
+    ? db.prepare(`SELECT * FROM attachments WHERE step_id IN (${stepIds.join(',')})`).all()
+    : [];
+
+  const attachMap = {};
+  for (const a of attachments) {
+    if (!attachMap[a.step_id]) attachMap[a.step_id] = [];
+    attachMap[a.step_id].push(a);
+  }
+
+  res.json(steps.map(s => ({ ...s, completed: !!s.completed, attachments: attachMap[s.id] || [] })));
+});
+
+// Create step
+app.post('/api/projects/:projectId/steps', authMiddleware, (req, res) => {
+  const { projectId } = req.params;
+  const { name, remark } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: '步骤名称不能为空' });
+
+  const project = db.prepare('SELECT id FROM projects WHERE id = ? AND user_id = ?')
+    .get(projectId, req.user.id);
+  if (!project) return res.status(404).json({ error: '项目不存在' });
+
+  const maxOrder = db.prepare('SELECT MAX(sort_order) as max_order FROM steps WHERE project_id = ?').get(projectId);
+  const sortOrder = (maxOrder?.max_order ?? -1) + 1;
+
+  const result = db.prepare('INSERT INTO steps (project_id, name, remark, sort_order) VALUES (?, ?, ?, ?)')
+    .run(projectId, name.trim(), remark || '', sortOrder);
+
+  const step = db.prepare('SELECT * FROM steps WHERE id = ?').get(result.lastInsertRowid);
+  res.status(201).json({ ...step, completed: false, attachments: [] });
+});
+
+// Update step
+app.put('/api/projects/:projectId/steps/:stepId', authMiddleware, (req, res) => {
+  const { stepId } = req.params;
+  const { name, remark, completed } = req.body;
+
+  const step = db.prepare(`
+    SELECT s.* FROM steps s
+    JOIN projects p ON s.project_id = p.id
+    WHERE s.id = ? AND p.user_id = ?
+  `).get(stepId, req.user.id);
+  if (!step) return res.status(404).json({ error: '步骤不存在' });
+
+  const updates = {};
+  if (name !== undefined) updates.name = name.trim();
+  if (remark !== undefined) updates.remark = remark;
+  if (completed !== undefined) updates.completed = completed ? 1 : 0;
+
+  const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+  if (setClauses) {
+    db.prepare(`UPDATE steps SET ${setClauses}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .run(...Object.values(updates), stepId);
+  }
+
+  const updated = db.prepare('SELECT * FROM steps WHERE id = ?').get(stepId);
+  res.json({ ...updated, completed: !!updated.completed });
+});
+
+// Delete step
+app.delete('/api/projects/:projectId/steps/:stepId', authMiddleware, (req, res) => {
+  const { stepId } = req.params;
+  const step = db.prepare(`
+    SELECT s.* FROM steps s
+    JOIN projects p ON s.project_id = p.id
+    WHERE s.id = ? AND p.user_id = ?
+  `).get(stepId, req.user.id);
+  if (!step) return res.status(404).json({ error: '步骤不存在' });
+
+  const attachments = db.prepare('SELECT * FROM attachments WHERE step_id = ?').all(stepId);
+  for (const a of attachments) {
+    const filePath = path.join(uploadDir, a.filename);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  }
+
+  db.prepare('DELETE FROM steps WHERE id = ?').run(stepId);
+  res.json({ success: true });
+});
+
+// Upload attachments
+app.post('/api/projects/:projectId/steps/:stepId/attachments', authMiddleware, upload.array('files', 20), (req, res) => {
+  const { stepId } = req.params;
+  const step = db.prepare(`
+    SELECT s.* FROM steps s
+    JOIN projects p ON s.project_id = p.id
+    WHERE s.id = ? AND p.user_id = ?
+  `).get(stepId, req.user.id);
+  if (!step) return res.status(404).json({ error: '步骤不存在' });
+
+  const insert = db.prepare('INSERT INTO attachments (step_id, filename, original_name, mime_type, size) VALUES (?, ?, ?, ?, ?)');
+  const files = req.files.map(f => {
+    const result = insert.run(stepId, f.filename, f.originalname, f.mimetype, f.size);
+    return db.prepare('SELECT * FROM attachments WHERE id = ?').get(result.lastInsertRowid);
+  });
+
+  res.status(201).json(files);
+});
+
+// Delete attachment
+app.delete('/api/projects/:projectId/steps/:stepId/attachments/:attachmentId', authMiddleware, (req, res) => {
+  const { attachmentId } = req.params;
+  const attachment = db.prepare(`
+    SELECT a.* FROM attachments a
+    JOIN steps s ON a.step_id = s.id
+    JOIN projects p ON s.project_id = p.id
+    WHERE a.id = ? AND p.user_id = ?
+  `).get(attachmentId, req.user.id);
+  if (!attachment) return res.status(404).json({ error: '附件不存在' });
+
+  const filePath = path.join(uploadDir, attachment.filename);
+  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+  db.prepare('DELETE FROM attachments WHERE id = ?').run(attachmentId);
+  res.json({ success: true });
+});
+
+// Download attachment
+app.get('/api/projects/:projectId/steps/attachments/:attachmentId/download', authMiddleware, (req, res) => {
+  const { attachmentId } = req.params;
+  const attachment = db.prepare(`
+    SELECT a.* FROM attachments a
+    JOIN steps s ON a.step_id = s.id
+    JOIN projects p ON s.project_id = p.id
+    WHERE a.id = ? AND p.user_id = ?
+  `).get(attachmentId, req.user.id);
+  if (!attachment) return res.status(404).json({ error: '附件不存在' });
+
+  const filePath = path.join(uploadDir, attachment.filename);
+  res.download(filePath, attachment.original_name);
+});
 
 // ============================================================
 // Home page

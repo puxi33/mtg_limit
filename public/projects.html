@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>项目管理 - MTG 限制赛</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .project-nav {
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .project-nav-brand {
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: var(--text-bright);
+      cursor: pointer;
+    }
+    .project-nav-links {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
+    .project-nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      transition: all 0.2s;
+      font-size: 0.9rem;
+    }
+    .project-nav-links a:hover {
+      background: var(--bg-hover);
+      color: var(--text-bright);
+    }
+    .project-nav-links a.active {
+      background: var(--primary);
+      color: white;
+    }
+    .project-container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    .project-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .project-header h2 {
+      margin: 0;
+      color: var(--text-bright);
+      font-size: 1.8rem;
+    }
+    .project-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .project-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .project-card:hover {
+      border-color: var(--primary);
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    .project-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 12px;
+      gap: 8px;
+    }
+    .project-card-header h3 {
+      margin: 0;
+      font-size: 1.2rem;
+      color: var(--text-bright);
+      flex: 1;
+    }
+    .progress-bar {
+      background: var(--bg-hover);
+      border-radius: 4px;
+      height: 8px;
+      overflow: hidden;
+      margin-bottom: 8px;
+    }
+    .progress-fill {
+      height: 100%;
+      transition: width 0.3s;
+      background: var(--primary);
+    }
+    .progress-fill.complete {
+      background: var(--success);
+    }
+    .step-preview {
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+      margin-top: 12px;
+    }
+    .step-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+      font-size: 0.85rem;
+    }
+    .step-icon {
+      font-size: 1rem;
+    }
+    .step-icon.completed {
+      color: var(--success);
+    }
+    .step-icon.pending {
+      color: var(--warning);
+    }
+    .timeline {
+      position: relative;
+      padding-left: 48px;
+    }
+    .timeline-item {
+      position: relative;
+      margin-bottom: 32px;
+    }
+    .timeline-marker {
+      position: absolute;
+      left: -48px;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+    .timeline-marker.completed {
+      background: var(--success);
+    }
+    .timeline-marker.pending {
+      background: var(--warning);
+    }
+    .timeline-line {
+      position: absolute;
+      left: -32px;
+      top: 32px;
+      width: 2px;
+      height: calc(100% + 32px);
+      background: var(--border);
+    }
+    .timeline-item:last-child .timeline-line {
+      display: none;
+    }
+    .timeline-content {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .timeline-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 12px;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .timeline-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--text-bright);
+      margin: 0 0 4px 0;
+    }
+    .complete-btn {
+      padding: 10px 20px;
+      font-size: 1rem;
+      font-weight: 600;
+      border: 2px solid;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+      min-width: 120px;
+    }
+    .complete-btn.mark-complete {
+      background: var(--success);
+      border-color: var(--success);
+      color: white;
+    }
+    .complete-btn.mark-complete:hover {
+      background: transparent;
+      color: var(--success);
+    }
+    .complete-btn.mark-incomplete {
+      background: transparent;
+      border-color: var(--warning);
+      color: var(--warning);
+    }
+    .complete-btn.mark-incomplete:hover {
+      background: var(--warning);
+      color: white;
+    }
+    .attachment-list {
+      margin-top: 12px;
+    }
+    .attachment-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px;
+      background: var(--bg-hover);
+      border-radius: 4px;
+      margin-bottom: 4px;
+      font-size: 0.85rem;
+    }
+    .attachment-name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .attachment-size {
+      color: var(--text-muted);
+      font-size: 0.75rem;
+    }
+    @media (max-width: 768px) {
+      .project-nav {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .project-nav-links {
+        width: 100%;
+        justify-content: space-between;
+        flex-wrap: wrap;
+      }
+      .project-container {
+        padding: 12px;
+      }
+      .project-header {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .project-header h2 {
+        font-size: 1.5rem;
+      }
+      .project-grid {
+        grid-template-columns: 1fr;
+      }
+      .timeline {
+        padding-left: 36px;
+      }
+      .timeline-marker {
+        left: -36px;
+        width: 28px;
+        height: 28px;
+        font-size: 0.8rem;
+      }
+      .timeline-line {
+        left: -22px;
+      }
+      .timeline-header {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .complete-btn {
+        width: 100%;
+      }
+      .attachment-item {
+        flex-wrap: wrap;
+      }
+    }
+  </style>
+</head>
+<body>
+  <nav class="project-nav">
+    <div class="project-nav-brand" onclick="navigate('projects')">项目管理</div>
+    <div class="project-nav-links">
+      <a onclick="navigate('projects')" data-page="projects">项目列表</a>
+      <a href="/" style="color:var(--text-muted)">返回主站</a>
+      <span id="nav-username" style="color:var(--text-muted);font-size:0.85rem"></span>
+      <a onclick="logout()" style="cursor:pointer">退出</a>
+    </div>
+  </nav>
+
+  <div class="project-container">
+    <main id="content"></main>
+  </div>
+
+  <div id="modal-overlay" class="modal-overlay hidden" onclick="closeModal()">
+    <div class="modal-content" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3 id="modal-title"></h3>
+        <button class="modal-close" onclick="closeModal()">&times;</button>
+      </div>
+      <div id="modal-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/project-app.js"></script>
+</body>
+</html>
