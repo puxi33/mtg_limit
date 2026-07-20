@@ -114,15 +114,67 @@ echo ""
 echo ">>> 等待部署完成 (每 10 秒检查，超时 ${DEPLOY_TIMEOUT}s)..."
 ELAPSED=0
 
+# 获取 PipelineId
+PIPELINE_ID=$(echo "$DEPLOY_RESULT" \
+  | grep -oE '"CurrentPipelineId"\s*:\s*"[^"]*"' \
+  | head -1 \
+  | sed 's/.*"CurrentPipelineId"[[:space:]]*:[[:space:]]*"//;s/"//')
+
+# 如果 DeployApplication 没返回 PipelineId，从 ChangeOrder 获取
+if [ -z "$PIPELINE_ID" ]; then
+  sleep 3
+  CO_JSON=$(aliyun sae DescribeChangeOrder \
+    --endpoint "$SAE_ENDPOINT" \
+    --ChangeOrderId "$CHANGE_ORDER_ID" 2>/dev/null || echo '{}')
+  PIPELINE_ID=$(echo "$CO_JSON" \
+    | grep -oE '"CurrentPipelineId"\s*:\s*"[^"]*"' \
+    | head -1 \
+    | sed 's/.*"CurrentPipelineId"[[:space:]]*:[[:space:]]*"//;s/"//')
+fi
+
 while [ $ELAPSED -lt $DEPLOY_TIMEOUT ]; do
   sleep 10
   ELAPSED=$((ELAPSED + 10))
 
+  # 优先通过 DescribePipeline 的 CoStatus 判断
+  if [ -n "$PIPELINE_ID" ]; then
+    PIPELINE_JSON=$(aliyun sae DescribePipeline \
+      --endpoint "$SAE_ENDPOINT" \
+      --PipelineId "$PIPELINE_ID" 2>/dev/null || echo '{}')
+
+    CO_STATUS=$(echo "$PIPELINE_JSON" \
+      | grep -oE '"CoStatus"\s*:\s*"[^"]*"' \
+      | head -1 \
+      | sed 's/.*"CoStatus"[[:space:]]*:[[:space:]]*"//;s/"//')
+
+    if [ "$CO_STATUS" = "Success" ]; then
+      echo ""
+      echo "========== 部署成功 =========="
+      echo "应用: mtg-limited"
+      echo "镜像: $IMAGE_URL"
+      echo "变更单: $CHANGE_ORDER_ID"
+      echo "耗时: ${ELAPSED}s"
+      echo "$NEW_TAG" > .deploy-version
+      exit 0
+    fi
+
+    # 检查是否有任务失败
+    HAS_FAIL=$(echo "$PIPELINE_JSON" \
+      | grep -oE '"Status"\s*:\s*3' | head -1)
+    if [ -n "$HAS_FAIL" ]; then
+      echo ""
+      echo "========== 部署失败 =========="
+      echo "变更单: $CHANGE_ORDER_ID"
+      echo "请到 SAE 控制台查看详细日志"
+      exit 1
+    fi
+  fi
+
+  # 回退: 通过 DescribeChangeOrder 的 Status 判断
   STATUS_JSON=$(aliyun sae DescribeChangeOrder \
     --endpoint "$SAE_ENDPOINT" \
     --ChangeOrderId "$CHANGE_ORDER_ID" 2>/dev/null || echo '{}')
 
-  # Status: 0=成功, 1=失败, 2-6=进行中, 10=终止
   STATUS=$(echo "$STATUS_JSON" \
     | grep -oE '"Status"\s*:\s*[0-9]+' \
     | head -1 \
@@ -153,7 +205,7 @@ while [ $ELAPSED -lt $DEPLOY_TIMEOUT ]; do
       exit 1
       ;;
     *)
-      printf "\r    部署中... (%ds, status=%s)   " "$ELAPSED" "${STATUS:-?}"
+      printf "\r    部署中... (%ds, status=%s, co=%s)   " "$ELAPSED" "${STATUS:-?}" "${CO_STATUS:-?}"
       ;;
   esac
 done
