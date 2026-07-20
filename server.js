@@ -559,6 +559,41 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (step_id) REFERENCES steps(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS life_projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    remark TEXT DEFAULT '',
+    sort_order INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS life_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    parent_id INTEGER DEFAULT NULL,
+    name TEXT NOT NULL,
+    remark TEXT DEFAULT '',
+    completed INTEGER DEFAULT 0,
+    sort_order INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES life_projects(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS life_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    step_id INTEGER NOT NULL,
+    filename TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    mime_type TEXT DEFAULT '',
+    size INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (step_id) REFERENCES life_steps(id) ON DELETE CASCADE
+  );
 `);
 
 // Schema migrations for tables that may pre-date the new columns.
@@ -3953,10 +3988,331 @@ app.get('/api/projects/:projectId/steps/attachments/:attachmentId/view', authMid
 });
 
 // ============================================================
+// Life Todo API
+// ============================================================
+
+// Get all life projects
+app.get('/api/life/projects', authMiddleware, (req, res) => {
+  const projects = db.prepare(`
+    SELECT p.*
+    FROM life_projects p
+    WHERE p.user_id = ?
+    ORDER BY p.sort_order ASC, p.created_at DESC
+  `).all(req.user.id);
+
+  const allSteps = db.prepare(`
+    SELECT id, project_id, parent_id, name, remark, completed, sort_order
+    FROM life_steps
+    WHERE project_id IN (SELECT id FROM life_projects WHERE user_id = ?)
+    ORDER BY sort_order ASC, created_at ASC
+  `).all(req.user.id);
+
+  const stepsMap = {};
+  for (const step of allSteps) {
+    if (!stepsMap[step.project_id]) stepsMap[step.project_id] = [];
+    stepsMap[step.project_id].push({ ...step, completed: !!step.completed });
+  }
+
+  const result = projects.map(p => {
+    const steps = stepsMap[p.id] || [];
+    const parentIds = new Set(steps.filter(s => s.parent_id).map(s => s.parent_id));
+    const leaves = steps.filter(s => !parentIds.has(s.id));
+    const total = leaves.length;
+    const completed = leaves.filter(s => s.completed).length;
+    return { ...p, steps, total_steps: total, completed_steps: completed };
+  });
+
+  res.json(result);
+});
+
+// Get single life project with steps and attachments
+app.get('/api/life/projects/:id', authMiddleware, (req, res) => {
+  const project = db.prepare('SELECT * FROM life_projects WHERE id = ? AND user_id = ?')
+    .get(req.params.id, req.user.id);
+
+  if (!project) return res.status(404).json({ error: '待办不存在' });
+
+  const steps = db.prepare(`
+    SELECT * FROM life_steps WHERE project_id = ? ORDER BY sort_order ASC, created_at ASC
+  `).all(project.id);
+
+  const stepIds = steps.map(s => s.id);
+  const attachments = stepIds.length
+    ? db.prepare(`SELECT * FROM life_attachments WHERE step_id IN (${stepIds.join(',')})`).all()
+    : [];
+
+  const attachMap = {};
+  for (const a of attachments) {
+    if (!attachMap[a.step_id]) attachMap[a.step_id] = [];
+    attachMap[a.step_id].push(a);
+  }
+
+  const stepsWithAttachments = steps.map(s => ({
+    ...s,
+    completed: !!s.completed,
+    attachments: attachMap[s.id] || [],
+  }));
+
+  const parentIds = new Set(steps.filter(s => s.parent_id).map(s => s.parent_id));
+  const leaves = steps.filter(s => !parentIds.has(s.id));
+  const totalSteps = leaves.length;
+  const completedSteps = leaves.filter(s => s.completed).length;
+
+  res.json({ ...project, steps: stepsWithAttachments, total_steps: totalSteps, completed_steps: completedSteps });
+});
+
+// Create life project
+app.post('/api/life/projects', authMiddleware, (req, res) => {
+  const { name, remark } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: '名称不能为空' });
+
+  const result = db.prepare('INSERT INTO life_projects (user_id, name, remark) VALUES (?, ?, ?)')
+    .run(req.user.id, name.trim(), remark || '');
+  const project = db.prepare('SELECT * FROM life_projects WHERE id = ?').get(result.lastInsertRowid);
+
+  res.status(201).json({ ...project, steps: [] });
+});
+
+// Reorder life projects (must be before :id routes)
+app.put('/api/life/projects/reorder', authMiddleware, (req, res) => {
+  const { orderedIds } = req.body;
+  if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+    return res.status(400).json({ error: '无效的参数' });
+  }
+  const updateOrder = db.transaction(() => {
+    orderedIds.forEach((id, index) => {
+      db.prepare('UPDATE life_projects SET sort_order = ? WHERE id = ? AND user_id = ?')
+        .run(index, id, req.user.id);
+    });
+  });
+  updateOrder();
+  res.json({ success: true });
+});
+
+// Update life project
+app.put('/api/life/projects/:id', authMiddleware, (req, res) => {
+  const { name, remark } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: '名称不能为空' });
+
+  const existing = db.prepare('SELECT * FROM life_projects WHERE id = ? AND user_id = ?')
+    .get(req.params.id, req.user.id);
+  if (!existing) return res.status(404).json({ error: '待办不存在' });
+
+  db.prepare('UPDATE life_projects SET name = ?, remark = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+    .run(name.trim(), remark || '', req.params.id);
+
+  const project = db.prepare('SELECT * FROM life_projects WHERE id = ?').get(req.params.id);
+  res.json(project);
+});
+
+// Delete life project
+app.delete('/api/life/projects/:id', authMiddleware, (req, res) => {
+  const existing = db.prepare('SELECT * FROM life_projects WHERE id = ? AND user_id = ?')
+    .get(req.params.id, req.user.id);
+  if (!existing) return res.status(404).json({ error: '待办不存在' });
+
+  db.prepare('DELETE FROM life_projects WHERE id = ?').run(req.params.id);
+  res.json({ success: true });
+});
+
+// Get life steps
+app.get('/api/life/projects/:projectId/steps', authMiddleware, (req, res) => {
+  const project = db.prepare('SELECT id FROM life_projects WHERE id = ? AND user_id = ?')
+    .get(req.params.projectId, req.user.id);
+  if (!project) return res.status(404).json({ error: '待办不存在' });
+
+  const steps = db.prepare('SELECT * FROM life_steps WHERE project_id = ? ORDER BY sort_order ASC, created_at ASC')
+    .all(req.params.projectId);
+
+  const stepIds = steps.map(s => s.id);
+  const attachments = stepIds.length
+    ? db.prepare(`SELECT * FROM life_attachments WHERE step_id IN (${stepIds.join(',')})`).all()
+    : [];
+
+  const attachMap = {};
+  for (const a of attachments) {
+    if (!attachMap[a.step_id]) attachMap[a.step_id] = [];
+    attachMap[a.step_id].push(a);
+  }
+
+  res.json(steps.map(s => ({ ...s, completed: !!s.completed, attachments: attachMap[s.id] || [] })));
+});
+
+// Create life step
+app.post('/api/life/projects/:projectId/steps', authMiddleware, (req, res) => {
+  const { projectId } = req.params;
+  const { name, remark, parent_id } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: '步骤名称不能为空' });
+
+  const project = db.prepare('SELECT id FROM life_projects WHERE id = ? AND user_id = ?')
+    .get(projectId, req.user.id);
+  if (!project) return res.status(404).json({ error: '待办不存在' });
+
+  if (parent_id) {
+    const parent = db.prepare('SELECT id FROM life_steps WHERE id = ? AND project_id = ?').get(parent_id, projectId);
+    if (!parent) return res.status(400).json({ error: '父步骤不存在' });
+  }
+
+  const maxOrder = db.prepare('SELECT MAX(sort_order) as max_order FROM life_steps WHERE project_id = ? AND parent_id IS ?')
+    .get(projectId, parent_id || null);
+  const sortOrder = (maxOrder?.max_order ?? -1) + 1;
+
+  const result = db.prepare('INSERT INTO life_steps (project_id, parent_id, name, remark, sort_order) VALUES (?, ?, ?, ?, ?)')
+    .run(projectId, parent_id || null, name.trim(), remark || '', sortOrder);
+
+  const step = db.prepare('SELECT * FROM life_steps WHERE id = ?').get(result.lastInsertRowid);
+  res.status(201).json({ ...step, completed: false, attachments: [] });
+});
+
+// Update life step
+app.put('/api/life/projects/:projectId/steps/:stepId', authMiddleware, (req, res) => {
+  const { stepId } = req.params;
+  const { name, remark, completed } = req.body;
+
+  const step = db.prepare(`
+    SELECT s.* FROM life_steps s
+    JOIN life_projects p ON s.project_id = p.id
+    WHERE s.id = ? AND p.user_id = ?
+  `).get(stepId, req.user.id);
+  if (!step) return res.status(404).json({ error: '步骤不存在' });
+
+  const updates = {};
+  if (name !== undefined) updates.name = name.trim();
+  if (remark !== undefined) updates.remark = remark;
+  if (completed !== undefined) updates.completed = completed ? 1 : 0;
+
+  const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+  if (setClauses) {
+    db.prepare(`UPDATE life_steps SET ${setClauses}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .run(...Object.values(updates), stepId);
+  }
+
+  const updated = db.prepare('SELECT * FROM life_steps WHERE id = ?').get(stepId);
+  res.json({ ...updated, completed: !!updated.completed });
+});
+
+// Delete life step (cascade)
+app.delete('/api/life/projects/:projectId/steps/:stepId', authMiddleware, (req, res) => {
+  const { stepId } = req.params;
+  const step = db.prepare(`
+    SELECT s.* FROM life_steps s
+    JOIN life_projects p ON s.project_id = p.id
+    WHERE s.id = ? AND p.user_id = ?
+  `).get(stepId, req.user.id);
+  if (!step) return res.status(404).json({ error: '步骤不存在' });
+
+  const allIds = [];
+  function collectIds(parentId) {
+    const children = db.prepare('SELECT id FROM life_steps WHERE parent_id = ?').all(parentId);
+    for (const child of children) {
+      allIds.push(child.id);
+      collectIds(child.id);
+    }
+  }
+  allIds.push(step.id);
+  collectIds(step.id);
+
+  const placeholders = allIds.join(',');
+
+  const deleteTransaction = db.transaction(() => {
+    const attachments = db.prepare(`SELECT * FROM life_attachments WHERE step_id IN (${placeholders})`).all();
+    for (const a of attachments) {
+      const filePath = path.join(uploadDir, a.filename);
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    }
+    db.prepare(`DELETE FROM life_attachments WHERE step_id IN (${placeholders})`).run();
+    db.prepare(`DELETE FROM life_steps WHERE id IN (${placeholders})`).run();
+  });
+
+  try {
+    deleteTransaction();
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Delete life step transaction failed:', err);
+    res.status(500).json({ error: '删除失败' });
+  }
+});
+
+// Upload life attachments
+app.post('/api/life/projects/:projectId/steps/:stepId/attachments', authMiddleware, upload.array('files', 20), (req, res) => {
+  const { stepId } = req.params;
+  const step = db.prepare(`
+    SELECT s.* FROM life_steps s
+    JOIN life_projects p ON s.project_id = p.id
+    WHERE s.id = ? AND p.user_id = ?
+  `).get(stepId, req.user.id);
+  if (!step) return res.status(404).json({ error: '步骤不存在' });
+
+  const insert = db.prepare('INSERT INTO life_attachments (step_id, filename, original_name, mime_type, size) VALUES (?, ?, ?, ?, ?)');
+  const files = req.files.map(f => {
+    const result = insert.run(stepId, f.filename, f.originalname, f.mimetype, f.size);
+    return db.prepare('SELECT * FROM life_attachments WHERE id = ?').get(result.lastInsertRowid);
+  });
+
+  res.status(201).json(files);
+});
+
+// Delete life attachment
+app.delete('/api/life/projects/:projectId/steps/:stepId/attachments/:attachmentId', authMiddleware, (req, res) => {
+  const { attachmentId } = req.params;
+  const attachment = db.prepare(`
+    SELECT a.* FROM life_attachments a
+    JOIN life_steps s ON a.step_id = s.id
+    JOIN life_projects p ON s.project_id = p.id
+    WHERE a.id = ? AND p.user_id = ?
+  `).get(attachmentId, req.user.id);
+  if (!attachment) return res.status(404).json({ error: '附件不存在' });
+
+  const filePath = path.join(uploadDir, attachment.filename);
+  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+  db.prepare('DELETE FROM life_attachments WHERE id = ?').run(attachmentId);
+  res.json({ success: true });
+});
+
+// Download life attachment
+app.get('/api/life/projects/:projectId/steps/attachments/:attachmentId/download', authMiddleware, (req, res) => {
+  const { attachmentId } = req.params;
+  const attachment = db.prepare(`
+    SELECT a.* FROM life_attachments a
+    JOIN life_steps s ON a.step_id = s.id
+    JOIN life_projects p ON s.project_id = p.id
+    WHERE a.id = ? AND p.user_id = ?
+  `).get(attachmentId, req.user.id);
+  if (!attachment) return res.status(404).json({ error: '附件不存在' });
+
+  const filePath = path.join(uploadDir, attachment.filename);
+  res.download(filePath, attachment.original_name);
+});
+
+// View life attachment inline
+app.get('/api/life/projects/:projectId/steps/attachments/:attachmentId/view', authMiddleware, (req, res) => {
+  const { attachmentId } = req.params;
+  const attachment = db.prepare(`
+    SELECT a.* FROM life_attachments a
+    JOIN life_steps s ON a.step_id = s.id
+    JOIN life_projects p ON s.project_id = p.id
+    WHERE a.id = ? AND p.user_id = ?
+  `).get(attachmentId, req.user.id);
+  if (!attachment) return res.status(404).json({ error: '附件不存在' });
+
+  const filePath = path.join(uploadDir, attachment.filename);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: '文件不存在' });
+
+  res.setHeader('Content-Type', attachment.mime_type || 'application/octet-stream');
+  res.setHeader('Content-Disposition', 'inline');
+  fs.createReadStream(filePath).pipe(res);
+});
+
+// ============================================================
 // Home page
 // ============================================================
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'home.html'));
+});
+
+app.get('/life', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'life.html'));
 });
 
 // ============================================================

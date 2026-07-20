@@ -352,6 +352,7 @@
       font-size: 0.82rem;
       cursor: pointer;
       transition: all 0.2s;
+      white-space: nowrap;
     }
     .filter-btn:hover {
       border-color: var(--primary);
@@ -612,6 +613,7 @@
   <nav class="project-nav">
     <div class="project-nav-brand" onclick="navigate('projects')">项目管理</div>
     <div class="project-nav-links">
+      <a class="nav-logout-btn" href="/life" style="border-color:var(--primary-light);color:var(--primary)">生活待办</a>
       <span class="nav-user-badge">
         <span class="nav-user-avatar" id="nav-avatar"></span>
         <span id="nav-username"></span>
