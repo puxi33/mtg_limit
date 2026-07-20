@@ -469,38 +469,6 @@ textarea {
   transform: none !important;
 }
 
-/* World Map form styles (used in modals) */
-.wm-form-group {
-  margin-bottom: 12px;
-}
-.wm-form-group label {
-  display: block;
-  font-size: 0.85rem;
-  color: var(--text-muted);
-  margin-bottom: 4px;
-}
-.wm-form-group input,
-.wm-form-group textarea {
-  width: 100%;
-  padding: 8px 10px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text);
-  font-size: 0.9rem;
-}
-.wm-form-group input:focus,
-.wm-form-group textarea:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-.wm-form-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 16px;
-}
-
 /* ============================================================
    Cards (MTGA-style)
    ============================================================ */
