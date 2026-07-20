@@ -53,9 +53,7 @@ function closeModal() {
 function navigate(page, params = {}) {
   state.currentPage = page;
   state.pageData = params;
-  
   const content = document.getElementById('content');
-  
   if (page === 'projects') {
     renderProjects(content);
   } else if (page === 'project-detail') {
@@ -89,7 +87,6 @@ async function handleAuth(e) {
   e.preventDefault();
   const username = document.getElementById('auth-username').value.trim();
   const password = document.getElementById('auth-password').value;
-  
   try {
     const data = await api('/api/auth/login', {
       method: 'POST',
@@ -111,6 +108,199 @@ function logout() {
   navigate('login');
 }
 
+// ========== TREE HELPERS ==========
+function buildStepTree(steps) {
+  const map = {};
+  steps.forEach(s => { map[s.id] = { ...s, children: [] }; });
+  const roots = [];
+  steps.forEach(s => {
+    if (s.parent_id && map[s.parent_id]) {
+      map[s.parent_id].children.push(map[s.id]);
+    } else {
+      roots.push(map[s.id]);
+    }
+  });
+  return roots;
+}
+
+function countLeaves(nodes) {
+  let total = 0, done = 0;
+  for (const n of nodes) {
+    if (n.children.length === 0) {
+      total++;
+      if (n.completed) done++;
+    } else {
+      const sub = countLeaves(n.children);
+      total += sub.total;
+      done += sub.done;
+    }
+  }
+  return { total, done };
+}
+
+function getNodeStatus(node) {
+  if (node.children.length === 0) {
+    return node.completed ? 'completed' : 'pending';
+  }
+  const { total, done } = countLeaves(node.children);
+  if (done === 0) return 'pending';
+  if (done === total) return 'completed';
+  return 'partial';
+}
+
+function renderStepTreeNode(node, projectId, depth) {
+  const hasChildren = node.children.length > 0;
+  const isLeaf = !hasChildren;
+  const childCount = isLeaf ? 0 : countLeaves(node.children);
+  const childDone = isLeaf ? 0 : countLeaves(node.children).done;
+
+  const toggleBtn = hasChildren
+    ? `<button class="step-toggle" onclick="event.stopPropagation();toggleStepCollapse(${node.id})" title="展开/折叠"><span id="step-arrow-${node.id}">&#9660;</span></button>`
+    : `<span class="step-toggle-placeholder"></span>`;
+
+  const checkIcon = node.completed
+    ? '<span class="step-check completed">&#10003;</span>'
+    : `<span class="step-check pending" onclick="event.stopPropagation();toggleStepComplete(${projectId},${node.id},true)" style="cursor:pointer" title="标记完成"></span>`;
+
+  const badge = isLeaf
+    ? `<span class="badge badge-${node.completed ? 'completed' : 'progress'}" style="font-size:0.7rem">${node.completed ? '已完成' : '待执行'}</span>`
+    : `<span class="badge" style="font-size:0.7rem;background:${childDone === childCount.total && childCount.total > 0 ? 'var(--success)' : 'var(--warning)'}">${childDone}/${childCount.total} 子项</span>`;
+
+  const actionBtns = `
+    <div class="step-actions">
+      ${isLeaf ? `<button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();toggleStepComplete(${projectId},${node.id},${!node.completed})" style="padding:3px 8px;font-size:0.7rem">${node.completed ? '标记未完成' : '标记完成'}</button>` : ''}
+      <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();showAddSubStepModal(${projectId},${node.id})" style="padding:3px 8px;font-size:0.7rem">+子步骤</button>
+      <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();showEditStepModal(${projectId},${node.id},'${escapeHtml(node.name)}','${escapeHtml(node.remark || '')}')" style="padding:3px 8px;font-size:0.7rem">编辑</button>
+      <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteStep(${projectId},${node.id})" style="padding:3px 8px;font-size:0.7rem">删除</button>
+    </div>
+  `;
+
+  const attachmentsHtml = (node.attachments && node.attachments.length > 0) ? `
+    <div class="step-attachments">
+      ${node.attachments.map(att => `
+        <div class="attachment-item">
+          <span class="attachment-name">${escapeHtml(att.original_name)}</span>
+          <span class="attachment-size">${(att.size / 1024).toFixed(1)} KB</span>
+          <a href="/api/projects/${projectId}/steps/attachments/${att.id}/download" class="btn btn-sm btn-secondary" style="padding:2px 6px;font-size:0.65rem">下载</a>
+          <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteAttachment(${projectId},${node.id},${att.id})" style="padding:2px 6px;font-size:0.65rem">删除</button>
+        </div>
+      `).join('')}
+    </div>
+  ` : '';
+
+  const uploadHtml = `
+    <div class="step-upload">
+      <input type="file" id="file-input-${node.id}" multiple style="display:none" onchange="handleFileUpload(${projectId},${node.id},this)">
+      <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();document.getElementById('file-input-${node.id}').click()" style="padding:2px 8px;font-size:0.7rem">上传附件</button>
+    </div>
+  `;
+
+  const childrenHtml = hasChildren ? `
+    <div class="step-children" id="step-children-${node.id}">
+      ${node.children.map(child => renderStepTreeNode(child, projectId, depth + 1)).join('')}
+    </div>
+  ` : '';
+
+  return `
+    <div class="step-tree-node" data-depth="${depth}">
+      <div class="step-node-row">
+        ${toggleBtn}
+        ${checkIcon}
+        <div class="step-node-info">
+          <span class="step-node-name">${escapeHtml(node.name)}</span>
+          ${badge}
+        </div>
+        ${actionBtns}
+      </div>
+      ${node.remark ? `<div class="step-node-remark">${escapeHtml(node.remark)}</div>` : ''}
+      ${attachmentsHtml}
+      ${uploadHtml}
+      ${childrenHtml}
+    </div>
+  `;
+}
+
+function toggleStepCollapse(stepId) {
+  const el = document.getElementById('step-children-' + stepId);
+  const arrow = document.getElementById('step-arrow-' + stepId);
+  if (!el) return;
+  if (el.style.display === 'none') {
+    el.style.display = 'block';
+    arrow.innerHTML = '&#9660;';
+  } else {
+    el.style.display = 'none';
+    arrow.innerHTML = '&#9654;';
+  }
+}
+
+// ========== TREE MODAL ==========
+function renderModalTreeNode(node, depth) {
+  const hasChildren = node.children.length > 0;
+  const status = getNodeStatus(node);
+  const icon = status === 'completed' ? '✓' : (status === 'partial' ? '◐' : '○');
+  const isLeaf = !hasChildren;
+
+  const badge = isLeaf
+    ? `<span class="badge badge-${status === 'completed' ? 'completed' : 'progress'}" style="font-size:0.65rem">${status === 'completed' ? '已完成' : '待执行'}</span>`
+    : (() => { const l = countLeaves(node.children); return `<span class="badge" style="font-size:0.65rem;background:${l.done === l.total && l.total > 0 ? 'var(--success)' : 'var(--warning)'}">${l.done}/${l.total}</span>`; })();
+
+  const toggleBtn = hasChildren
+    ? `<button class="step-toggle" onclick="event.stopPropagation();toggleStepCollapse(${node.id})" title="展开/折叠"><span id="step-arrow-${node.id}">&#9660;</span></button>`
+    : `<span class="step-toggle-placeholder"></span>`;
+
+  const childrenHtml = hasChildren ? `
+    <div class="step-children" id="step-children-${node.id}">
+      ${node.children.map(child => renderModalTreeNode(child, depth + 1)).join('')}
+    </div>
+  ` : '';
+
+  return `
+    <div class="step-tree-node" data-depth="${depth}">
+      <div class="step-node-row">
+        ${toggleBtn}
+        <span class="step-icon ${status}" style="font-size:1rem;flex-shrink:0">${icon}</span>
+        <div class="step-node-info">
+          <span class="step-node-name">${escapeHtml(node.name)}</span>
+          ${badge}
+        </div>
+      </div>
+      ${node.remark ? `<div class="step-node-remark">${escapeHtml(node.remark)}</div>` : ''}
+      ${childrenHtml}
+    </div>
+  `;
+}
+
+async function showProjectTreeModal(projectId, projectName) {
+  const body = `<div style="text-align:center;padding:40px">加载中...</div>`;
+  showModal(`${projectName} — 执行树`, body);
+  try {
+    const project = await api(`/api/projects/${projectId}`);
+    const tree = buildStepTree(project.steps || []);
+    const percent = project.total_steps > 0 ? Math.round((project.completed_steps / project.total_steps) * 100) : 0;
+
+    const treeHtml = tree.length > 0
+      ? `<div class="step-tree">${tree.map(node => renderModalTreeNode(node, 0)).join('')}</div>`
+      : '<div style="text-align:center;padding:40px;color:var(--text-muted)">暂无步骤</div>';
+
+    document.getElementById('modal-body').innerHTML = `
+      <div style="margin-bottom:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-size:0.85rem;color:var(--text-muted)">总进度</span>
+          <span style="font-size:1.1rem;font-weight:600;color:var(--text-bright)">${percent}% (${project.completed_steps}/${project.total_steps})</span>
+        </div>
+        <div class="progress-bar" style="height:10px">
+          <div class="progress-fill ${percent === 100 ? 'complete' : ''}" style="width:${percent}%"></div>
+        </div>
+      </div>
+      <div style="max-height:60vh;overflow-y:auto">
+        ${treeHtml}
+      </div>
+    `;
+  } catch (err) {
+    document.getElementById('modal-body').innerHTML = `<div style="text-align:center;padding:40px;color:var(--text-muted)">加载失败: ${err.message}</div>`;
+  }
+}
+
 // ========== PROJECTS LIST ==========
 async function renderProjects(el) {
   el.innerHTML = '<div style="text-align:center;padding:40px">加载中...</div>';
@@ -126,6 +316,7 @@ async function renderProjects(el) {
           const percent = project.total_steps > 0 ? Math.round((project.completed_steps / project.total_steps) * 100) : 0;
           const statusText = project.total_steps === 0 ? '未开始' : (percent === 100 ? '已完成' : '进行中');
           const statusClass = project.total_steps === 0 ? 'waiting' : (percent === 100 ? 'completed' : 'progress');
+          const tree = buildStepTree(project.steps || []);
           return `
           <div class="project-card" onclick="navigate('project-detail', {id:${project.id}})">
             <div class="project-card-header">
@@ -137,22 +328,32 @@ async function renderProjects(el) {
               <div class="progress-fill ${percent === 100 ? 'complete' : ''}" style="width:${percent}%"></div>
             </div>
             <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:8px">
-              ${project.completed_steps}/${project.total_steps} 步骤已完成 (${percent}%)
+              ${project.completed_steps}/${project.total_steps} 叶子步骤已完成 (${percent}%)
             </div>
-            ${project.steps && project.steps.length > 0 ? `
+            ${tree.length > 0 ? `
               <div class="step-preview">
-                ${project.steps.slice(0, 3).map(step => `
+                ${tree.slice(0, 3).map(step => {
+                  const status = getNodeStatus(step);
+                  const icon = status === 'completed' ? '✓' : (status === 'partial' ? '◐' : '○');
+                  const leafInfo = step.children.length > 0
+                    ? (() => { const l = countLeaves(step.children); return `<span style="font-size:0.7rem;color:var(--text-muted)">(${l.done}/${l.total})</span>`; })()
+                    : '';
+                  return `
                   <div class="step-item">
-                    <span class="step-icon ${step.completed ? 'completed' : 'pending'}">${step.completed ? '✓' : '○'}</span>
+                    <span class="step-icon ${status}">${icon}</span>
                     <span style="color:var(--text-muted)">${escapeHtml(step.name)}</span>
-                  </div>
-                `).join('')}
-                ${project.steps.length > 3 ? `<div style="font-size:0.75rem;color:var(--text-muted)">...还有 ${project.steps.length - 3} 个步骤</div>` : ''}
+                    ${leafInfo}
+                  </div>`;
+                }).join('')}
+                ${tree.length > 3 ? `<div style="font-size:0.75rem;color:var(--text-muted)">...还有 ${tree.length - 3} 个顶层步骤</div>` : ''}
               </div>
             ` : ''}
             <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
               <span style="font-size:0.75rem;color:var(--text-muted)">${new Date(project.created_at).toLocaleDateString()}</span>
-              <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteProject(${project.id})" style="padding:4px 12px;font-size:0.75rem">删除</button>
+              <div style="display:flex;gap:6px">
+                <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();showProjectTreeModal(${project.id},'${escapeHtml(project.name)}')" style="padding:4px 12px;font-size:0.75rem">执行树</button>
+                <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteProject(${project.id})" style="padding:4px 12px;font-size:0.75rem">删除</button>
+              </div>
             </div>
           </div>`;
         }).join('') || '<div style="text-align:center;padding:60px;color:var(--text-muted)"><h3>暂无项目</h3><p>点击"新建项目"开始</p></div>'}
@@ -204,11 +405,12 @@ async function renderProjectDetail(el, projectId) {
   try {
     const project = await api(`/api/projects/${projectId}`);
     const percent = project.total_steps > 0 ? Math.round((project.completed_steps / project.total_steps) * 100) : 0;
-    
+    const tree = buildStepTree(project.steps || []);
+
     el.innerHTML = `
       <div class="project-header">
         <div>
-          <button class="btn btn-secondary btn-sm" onclick="navigate('projects')" style="margin-bottom:8px">← 返回列表</button>
+          <button class="btn btn-secondary btn-sm" onclick="navigate('projects')" style="margin-bottom:8px">&larr; 返回列表</button>
           <h2 style="margin:8px 0">${escapeHtml(project.name)}</h2>
           ${project.remark ? `<p style="color:var(--text-muted);margin:0">${escapeHtml(project.remark)}</p>` : ''}
         </div>
@@ -217,15 +419,15 @@ async function renderProjectDetail(el, projectId) {
           <button class="btn btn-primary" onclick="showAddStepModal(${project.id})">添加步骤</button>
         </div>
       </div>
-      
+
       <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:20px;margin-bottom:24px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px">
           <div>
-            <div style="font-size:0.9rem;color:var(--text-muted)">完成进度</div>
+            <div style="font-size:0.9rem;color:var(--text-muted)">叶子步骤进度</div>
             <div style="font-size:2rem;font-weight:600;color:var(--text-bright)">${percent}%</div>
           </div>
           <div style="text-align:right">
-            <div style="font-size:0.9rem;color:var(--text-muted)">步骤统计</div>
+            <div style="font-size:0.9rem;color:var(--text-muted)">完成/总计</div>
             <div style="font-size:1.5rem;font-weight:600;color:var(--text-bright)">${project.completed_steps}/${project.total_steps}</div>
           </div>
         </div>
@@ -235,59 +437,14 @@ async function renderProjectDetail(el, projectId) {
       </div>
 
       <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;overflow:hidden">
-        <div style="padding:16px 20px;border-bottom:1px solid var(--border)">
-          <h3 style="margin:0;color:var(--text-bright)">步骤详情</h3>
+        <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+          <h3 style="margin:0;color:var(--text-bright)">执行树</h3>
+          <span style="font-size:0.8rem;color:var(--text-muted)">${project.steps.length} 个步骤</span>
         </div>
         <div style="padding:20px">
-          ${project.steps.length === 0 ? '<div style="text-align:center;padding:40px;color:var(--text-muted)"><p>暂无步骤，点击"添加步骤"开始</p></div>' : `
-            <div class="timeline">
-              ${project.steps.map((step, index) => `
-                <div class="timeline-item">
-                  <div class="timeline-marker ${step.completed ? 'completed' : 'pending'}">
-                    ${step.completed ? '✓' : index + 1}
-                  </div>
-                  <div class="timeline-line"></div>
-                  <div class="timeline-content">
-                    <div class="timeline-header">
-                      <div style="flex:1">
-                        <h4 class="timeline-title">${escapeHtml(step.name)}</h4>
-                        <span class="badge badge-${step.completed ? 'completed' : 'progress'}" style="font-size:0.75rem">
-                          ${step.completed ? '已完成' : '执行中'}
-                        </span>
-                      </div>
-                      <div style="display:flex;gap:8px;flex-wrap:wrap">
-                        <button class="complete-btn ${step.completed ? 'mark-incomplete' : 'mark-complete'}" onclick="toggleStepComplete(${project.id}, ${step.id}, ${!step.completed})">
-                          ${step.completed ? '标记未完成' : '✓ 标记完成'}
-                        </button>
-                        <button class="btn btn-sm btn-secondary" onclick="showEditStepModal(${project.id}, ${step.id}, '${escapeHtml(step.name)}', '${escapeHtml(step.remark || '')}')" style="padding:6px 12px">编辑</button>
-                        <button class="btn btn-sm btn-danger" onclick="deleteStep(${project.id}, ${step.id})" style="padding:6px 12px">删除</button>
-                      </div>
-                    </div>
-                    ${step.remark ? `<p style="color:var(--text-muted);font-size:0.9rem;margin:12px 0">${escapeHtml(step.remark)}</p>` : ''}
-                    
-                    ${step.attachments && step.attachments.length > 0 ? `
-                      <div class="attachment-list">
-                        <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:8px">附件 (${step.attachments.length})</div>
-                        ${step.attachments.map(att => `
-                          <div class="attachment-item">
-                            <span class="attachment-name">${escapeHtml(att.original_name)}</span>
-                            <span class="attachment-size">${(att.size / 1024).toFixed(1)} KB</span>
-                            <a href="/api/projects/${project.id}/steps/attachments/${att.id}/download" class="btn btn-sm btn-secondary" style="padding:4px 10px;font-size:0.75rem">下载</a>
-                            <button class="btn btn-sm btn-danger" onclick="deleteAttachment(${project.id}, ${step.id}, ${att.id})" style="padding:4px 10px;font-size:0.75rem">删除</button>
-                          </div>
-                        `).join('')}
-                      </div>
-                    ` : ''}
-                    
-                    <div style="margin-top:16px">
-                      <input type="file" id="file-input-${step.id}" multiple style="display:none" onchange="handleFileUpload(${project.id}, ${step.id}, this)">
-                      <button class="btn btn-sm btn-secondary" onclick="document.getElementById('file-input-${step.id}').click()" style="padding:8px 16px">
-                        上传附件
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              `).join('')}
+          ${tree.length === 0 ? '<div style="text-align:center;padding:40px;color:var(--text-muted)"><p>暂无步骤，点击"添加步骤"开始</p></div>' : `
+            <div class="step-tree">
+              ${tree.map(node => renderStepTreeNode(node, project.id, 0)).join('')}
             </div>
           `}
         </div>
@@ -332,14 +489,38 @@ function showAddStepModal(projectId) {
   `);
 }
 
+function showAddSubStepModal(projectId, parentStepId) {
+  showModal('添加子步骤', `
+    <form onsubmit="handleAddStepWithParent(event, ${projectId}, ${parentStepId})">
+      <div class="form-group"><label>步骤名称</label><input type="text" id="step-name" required placeholder="输入子步骤名称"></div>
+      <div class="form-group"><label>备注</label><textarea id="step-remark" rows="3" placeholder="可选备注信息"></textarea></div>
+      <button type="submit" class="btn btn-primary btn-block">添加</button>
+    </form>
+  `);
+}
+
 async function handleAddStep(e, projectId) {
   e.preventDefault();
   const name = document.getElementById('step-name').value.trim();
   const remark = document.getElementById('step-remark').value.trim();
   try {
-    await api(`/api/projects/${projectId}/steps`, { method: 'POST', body: JSON.stringify({ name, remark }) });
+    await api(`/api/projects/${projectId}/steps`, { method: 'POST', body: JSON.stringify({ name, remark, parent_id: null }) });
     closeModal();
     showToast('步骤已添加');
+    renderProjectDetail(document.getElementById('content'), projectId);
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function handleAddStepWithParent(e, projectId, parentId) {
+  e.preventDefault();
+  const name = document.getElementById('step-name').value.trim();
+  const remark = document.getElementById('step-remark').value.trim();
+  try {
+    await api(`/api/projects/${projectId}/steps`, { method: 'POST', body: JSON.stringify({ name, remark, parent_id: parentId }) });
+    closeModal();
+    showToast('子步骤已添加');
     renderProjectDetail(document.getElementById('content'), projectId);
   } catch (err) {
     showToast(err.message, 'error');
@@ -381,7 +562,7 @@ async function toggleStepComplete(projectId, stepId, completed) {
 }
 
 async function deleteStep(projectId, stepId) {
-  if (!confirm('确定要删除这个步骤吗？')) return;
+  if (!confirm('确定要删除这个步骤及其所有子步骤吗？')) return;
   try {
     await api(`/api/projects/${projectId}/steps/${stepId}`, { method: 'DELETE' });
     showToast('步骤已删除');
@@ -394,12 +575,10 @@ async function deleteStep(projectId, stepId) {
 async function handleFileUpload(projectId, stepId, input) {
   const files = input.files;
   if (!files || files.length === 0) return;
-  
   const formData = new FormData();
   for (const file of files) {
     formData.append('files', file);
   }
-  
   try {
     const res = await fetch(`/api/projects/${projectId}/steps/${stepId}/attachments`, {
       method: 'POST',

@@ -139,8 +139,8 @@ const Routes = {
   '/decks/:id/detail':  { page: 'deck-detail', id: ':id' },
   '/battles':           { page: 'battles' },
   '/battles/:id':       { page: 'battle-detail', id: ':id' },
-  '/projects':          { page: 'projects' },
-  '/projects/:id':      { page: 'project-detail', id: ':id' },
+  '/worlds':            { page: 'worlds' },
+  '/worlds/:id':        { page: 'world-detail', id: ':id' },
   '/profile':           { page: 'profile' }
 };
 
@@ -195,6 +195,9 @@ function routeToPath(page, params) {
     case 'battle-detail':
       return '/battles/' + encodeURIComponent(params.id || '');
     case 'profile':   return '/profile';
+    case 'worlds':    return '/worlds';
+    case 'world-detail':
+      return '/worlds/' + encodeURIComponent(params.id || '');
     default:          return '/dashboard';
   }
 }
@@ -275,8 +278,8 @@ function navigate(page, params = {}, opts = {}) {
       case 'deck-detail': renderDeckDetail(content, params.id); break;
       case 'battles': renderBattles(content); break;
       case 'battle-detail': renderBattleDetail(content, params.id); break;
-      case 'projects': renderProjects(content); break;
-      case 'project-detail': renderProjectDetail(content, params.id); break;
+      case 'worlds': renderWorlds(content); break;
+      case 'world-detail': renderWorldDetail(content, params.id); break;
       case 'profile': renderProfile(content); break;
       default: renderDashboard(content);
     }
@@ -6214,326 +6217,6 @@ async function mtgaReturnToEvent(battleId) {
   }
 }
 
-// ============================================================
-// PROJECT MANAGEMENT
-// ============================================================
-async function renderProjects(el) {
-  el.innerHTML = '<div class="text-center text-muted">加载中...</div>';
-  try {
-    const projects = await api('/api/projects');
-    el.innerHTML = `
-      <div class="page-header">
-        <h2>项目管理</h2>
-        <button class="btn btn-primary" onclick="showCreateProjectModal()">新建项目</button>
-      </div>
-      <div class="card-grid">
-        ${projects.map(project => {
-          const percent = project.total_steps > 0 ? Math.round((project.completed_steps / project.total_steps) * 100) : 0;
-          const statusText = project.total_steps === 0 ? '未开始' : (percent === 100 ? '已完成' : '进行中');
-          const statusClass = project.total_steps === 0 ? 'waiting' : (percent === 100 ? 'completed' : 'progress');
-          return `
-          <div class="card-item" onclick="navigate('project-detail', {id:${project.id}})">
-            <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px">
-              <h3 style="margin:0">${escapeHtml(project.name)}</h3>
-              <span class="badge badge-${statusClass}">${statusText}</span>
-            </div>
-            ${project.remark ? `<p class="text-muted" style="font-size:0.85rem;margin-bottom:12px">${escapeHtml(project.remark)}</p>` : ''}
-            <div style="margin-bottom:8px">
-              <div style="background:var(--bg-card);border-radius:4px;height:8px;overflow:hidden">
-                <div style="background:${percent === 100 ? 'var(--success)' : 'var(--primary)'};height:100%;width:${percent}%;transition:width 0.3s"></div>
-              </div>
-              <div style="font-size:0.75rem;color:var(--text-muted);margin-top:4px">
-                ${project.completed_steps}/${project.total_steps} 步骤已完成 (${percent}%)
-              </div>
-            </div>
-            ${project.steps && project.steps.length > 0 ? `
-              <div style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px">
-                ${project.steps.slice(0, 3).map(step => `
-                  <div style="font-size:0.8rem;margin-bottom:4px;display:flex;align-items:center;gap:6px">
-                    <span style="color:${step.completed ? 'var(--success)' : 'var(--warning)'}">${step.completed ? '✓' : '○'}</span>
-                    <span style="color:var(--text-muted)">${escapeHtml(step.name)}</span>
-                  </div>
-                `).join('')}
-                ${project.steps.length > 3 ? `<div style="font-size:0.75rem;color:var(--text-muted)">...还有 ${project.steps.length - 3} 个步骤</div>` : ''}
-              </div>
-            ` : ''}
-            <div class="card-meta">
-              <span>${new Date(project.created_at).toLocaleDateString()}</span>
-              <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteProject(${project.id})" style="padding:2px 8px;font-size:0.7rem">删除</button>
-            </div>
-          </div>`;
-        }).join('') || '<div class="empty-state"><h3>暂无项目</h3><p>点击"新建项目"开始</p></div>'}
-      </div>
-    `;
-  } catch (err) {
-    el.innerHTML = `<div class="empty-state"><h3>加载失败</h3><p>${err.message}</p></div>`;
-  }
-}
-
-function showCreateProjectModal() {
-  showModal('新建项目', `
-    <form onsubmit="handleCreateProject(event)">
-      <div class="form-group"><label>项目名称</label><input type="text" id="project-name" required placeholder="输入项目名称"></div>
-      <div class="form-group"><label>备注</label><textarea id="project-remark" rows="3" placeholder="可选备注信息"></textarea></div>
-      <button type="submit" class="btn btn-primary btn-block">创建</button>
-    </form>
-  `);
-}
-
-async function handleCreateProject(e) {
-  e.preventDefault();
-  const name = document.getElementById('project-name').value.trim();
-  const remark = document.getElementById('project-remark').value.trim();
-  try {
-    await api('/api/projects', { method: 'POST', body: JSON.stringify({ name, remark }) });
-    closeModal();
-    showToast('项目创建成功');
-    navigate('projects');
-  } catch (err) {
-    showToast(err.message, 'error');
-  }
-}
-
-async function deleteProject(id) {
-  if (!confirm('确定要删除这个项目吗？')) return;
-  try {
-    await api(`/api/projects/${id}`, { method: 'DELETE' });
-    showToast('项目已删除');
-    navigate('projects');
-  } catch (err) {
-    showToast(err.message, 'error');
-  }
-}
-
-async function renderProjectDetail(el, projectId) {
-  el.innerHTML = '<div class="text-center text-muted">加载中...</div>';
-  try {
-    const project = await api(`/api/projects/${projectId}`);
-    const percent = project.total_steps > 0 ? Math.round((project.completed_steps / project.total_steps) * 100) : 0;
-    
-    el.innerHTML = `
-      <div class="page-header">
-        <div>
-          <button class="btn btn-secondary btn-sm" onclick="navigate('projects')" style="margin-bottom:8px">← 返回列表</button>
-          <h2 style="margin:8px 0">${escapeHtml(project.name)}</h2>
-          ${project.remark ? `<p class="text-muted" style="margin:0">${escapeHtml(project.remark)}</p>` : ''}
-        </div>
-        <div style="display:flex;gap:8px">
-          <button class="btn btn-secondary" onclick="showEditProjectModal(${project.id}, '${escapeHtml(project.name)}', '${escapeHtml(project.remark || '')}')">编辑项目</button>
-          <button class="btn btn-primary" onclick="showAddStepModal(${project.id})">添加步骤</button>
-        </div>
-      </div>
-      
-      <div class="card" style="padding:16px;margin-bottom:16px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <div>
-            <div style="font-size:0.9rem;color:var(--text-muted)">完成进度</div>
-            <div style="font-size:1.5rem;font-weight:600;color:var(--text-bright)">${percent}%</div>
-          </div>
-          <div style="text-align:right">
-            <div style="font-size:0.9rem;color:var(--text-muted)">步骤统计</div>
-            <div style="font-size:1.2rem;font-weight:600;color:var(--text-bright)">${project.completed_steps}/${project.total_steps}</div>
-          </div>
-        </div>
-        <div style="background:var(--bg-card);border-radius:4px;height:12px;overflow:hidden">
-          <div style="background:${percent === 100 ? 'var(--success)' : 'var(--primary)'};height:100%;width:${percent}%;transition:width 0.3s"></div>
-        </div>
-      </div>
-
-      <div class="card" style="padding:0">
-        <div style="padding:16px;border-bottom:1px solid var(--border)">
-          <h3 style="margin:0">步骤详情</h3>
-        </div>
-        <div style="padding:16px">
-          ${project.steps.length === 0 ? '<div class="empty-state"><p>暂无步骤，点击"添加步骤"开始</p></div>' : `
-            <div style="position:relative">
-              ${project.steps.map((step, index) => `
-                <div style="display:flex;gap:16px;margin-bottom:24px;position:relative">
-                  <div style="display:flex;flex-direction:column;align-items:center">
-                    <div style="width:32px;height:32px;border-radius:50%;background:${step.completed ? 'var(--success)' : 'var(--warning)'};display:flex;align-items:center;justify-content:center;color:white;font-weight:600;font-size:0.9rem">
-                      ${step.completed ? '✓' : index + 1}
-                    </div>
-                    ${index < project.steps.length - 1 ? '<div style="width:2px;flex:1;background:var(--border);margin-top:8px"></div>' : ''}
-                  </div>
-                  <div style="flex:1;padding-bottom:8px">
-                    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
-                      <div>
-                        <h4 style="margin:0 0 4px 0;color:var(--text-bright)">${escapeHtml(step.name)}</h4>
-                        <span class="badge badge-${step.completed ? 'completed' : 'progress'}" style="font-size:0.7rem">
-                          ${step.completed ? '已完成' : '执行中'}
-                        </span>
-                      </div>
-                      <div style="display:flex;gap:4px">
-                        <button class="btn btn-sm btn-secondary" onclick="toggleStepComplete(${project.id}, ${step.id}, ${!step.completed})" style="padding:4px 8px;font-size:0.75rem">
-                          ${step.completed ? '标记未完成' : '标记完成'}
-                        </button>
-                        <button class="btn btn-sm btn-secondary" onclick="showEditStepModal(${project.id}, ${step.id}, '${escapeHtml(step.name)}', '${escapeHtml(step.remark || '')}')" style="padding:4px 8px;font-size:0.75rem">编辑</button>
-                        <button class="btn btn-sm btn-danger" onclick="deleteStep(${project.id}, ${step.id})" style="padding:4px 8px;font-size:0.75rem">删除</button>
-                      </div>
-                    </div>
-                    ${step.remark ? `<p class="text-muted" style="font-size:0.85rem;margin:8px 0">${escapeHtml(step.remark)}</p>` : ''}
-                    
-                    ${step.attachments && step.attachments.length > 0 ? `
-                      <div style="margin-top:12px">
-                        <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:8px">附件 (${step.attachments.length})</div>
-                        ${step.attachments.map(att => `
-                          <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--bg-card);border-radius:4px;margin-bottom:4px">
-                            <span style="flex:1;font-size:0.85rem">${escapeHtml(att.original_name)}</span>
-                            <span style="font-size:0.75rem;color:var(--text-muted)">${(att.size / 1024).toFixed(1)} KB</span>
-                            <a href="/api/projects/${project.id}/steps/attachments/${att.id}/download" class="btn btn-sm btn-secondary" style="padding:2px 8px;font-size:0.7rem">下载</a>
-                            <button class="btn btn-sm btn-danger" onclick="deleteAttachment(${project.id}, ${step.id}, ${att.id})" style="padding:2px 8px;font-size:0.7rem">删除</button>
-                          </div>
-                        `).join('')}
-                      </div>
-                    ` : ''}
-                    
-                    <div style="margin-top:12px">
-                      <input type="file" id="file-input-${step.id}" multiple style="display:none" onchange="handleFileUpload(${project.id}, ${step.id}, this)">
-                      <button class="btn btn-sm btn-secondary" onclick="document.getElementById('file-input-${step.id}').click()" style="padding:4px 12px;font-size:0.75rem">
-                        上传附件
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              `).join('')}
-            </div>
-          `}
-        </div>
-      </div>
-    `;
-  } catch (err) {
-    el.innerHTML = `<div class="empty-state"><h3>加载失败</h3><p>${err.message}</p></div>`;
-  }
-}
-
-function showEditProjectModal(id, name, remark) {
-  showModal('编辑项目', `
-    <form onsubmit="handleEditProject(event, ${id})">
-      <div class="form-group"><label>项目名称</label><input type="text" id="project-name" value="${name}" required></div>
-      <div class="form-group"><label>备注</label><textarea id="project-remark" rows="3">${remark}</textarea></div>
-      <button type="submit" class="btn btn-primary btn-block">保存</button>
-    </form>
-  `);
-}
-
-async function handleEditProject(e, id) {
-  e.preventDefault();
-  const name = document.getElementById('project-name').value.trim();
-  const remark = document.getElementById('project-remark').value.trim();
-  try {
-    await api(`/api/projects/${id}`, { method: 'PUT', body: JSON.stringify({ name, remark }) });
-    closeModal();
-    showToast('项目已更新');
-    renderProjectDetail(document.getElementById('content'), id);
-  } catch (err) {
-    showToast(err.message, 'error');
-  }
-}
-
-function showAddStepModal(projectId) {
-  showModal('添加步骤', `
-    <form onsubmit="handleAddStep(event, ${projectId})">
-      <div class="form-group"><label>步骤名称</label><input type="text" id="step-name" required placeholder="输入步骤名称"></div>
-      <div class="form-group"><label>备注</label><textarea id="step-remark" rows="3" placeholder="可选备注信息"></textarea></div>
-      <button type="submit" class="btn btn-primary btn-block">添加</button>
-    </form>
-  `);
-}
-
-async function handleAddStep(e, projectId) {
-  e.preventDefault();
-  const name = document.getElementById('step-name').value.trim();
-  const remark = document.getElementById('step-remark').value.trim();
-  try {
-    await api(`/api/projects/${projectId}/steps`, { method: 'POST', body: JSON.stringify({ name, remark }) });
-    closeModal();
-    showToast('步骤已添加');
-    renderProjectDetail(document.getElementById('content'), projectId);
-  } catch (err) {
-    showToast(err.message, 'error');
-  }
-}
-
-function showEditStepModal(projectId, stepId, name, remark) {
-  showModal('编辑步骤', `
-    <form onsubmit="handleEditStep(event, ${projectId}, ${stepId})">
-      <div class="form-group"><label>步骤名称</label><input type="text" id="step-name" value="${name}" required></div>
-      <div class="form-group"><label>备注</label><textarea id="step-remark" rows="3">${remark}</textarea></div>
-      <button type="submit" class="btn btn-primary btn-block">保存</button>
-    </form>
-  `);
-}
-
-async function handleEditStep(e, projectId, stepId) {
-  e.preventDefault();
-  const name = document.getElementById('step-name').value.trim();
-  const remark = document.getElementById('step-remark').value.trim();
-  try {
-    await api(`/api/projects/${projectId}/steps/${stepId}`, { method: 'PUT', body: JSON.stringify({ name, remark }) });
-    closeModal();
-    showToast('步骤已更新');
-    renderProjectDetail(document.getElementById('content'), projectId);
-  } catch (err) {
-    showToast(err.message, 'error');
-  }
-}
-
-async function toggleStepComplete(projectId, stepId, completed) {
-  try {
-    await api(`/api/projects/${projectId}/steps/${stepId}`, { method: 'PUT', body: JSON.stringify({ completed }) });
-    showToast(completed ? '已标记为完成' : '已标记为未完成');
-    renderProjectDetail(document.getElementById('content'), projectId);
-  } catch (err) {
-    showToast(err.message, 'error');
-  }
-}
-
-async function deleteStep(projectId, stepId) {
-  if (!confirm('确定要删除这个步骤吗？')) return;
-  try {
-    await api(`/api/projects/${projectId}/steps/${stepId}`, { method: 'DELETE' });
-    showToast('步骤已删除');
-    renderProjectDetail(document.getElementById('content'), projectId);
-  } catch (err) {
-    showToast(err.message, 'error');
-  }
-}
-
-async function handleFileUpload(projectId, stepId, input) {
-  const files = input.files;
-  if (!files || files.length === 0) return;
-  
-  const formData = new FormData();
-  for (const file of files) {
-    formData.append('files', file);
-  }
-  
-  try {
-    const res = await fetch(`/api/projects/${projectId}/steps/${stepId}/attachments`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${state.token}` },
-      body: formData
-    });
-    if (!res.ok) throw new Error('上传失败');
-    showToast('附件上传成功');
-    renderProjectDetail(document.getElementById('content'), projectId);
-  } catch (err) {
-    showToast(err.message, 'error');
-  } finally {
-    input.value = '';
-  }
-}
-
-async function deleteAttachment(projectId, stepId, attachmentId) {
-  if (!confirm('确定要删除这个附件吗？')) return;
-  try {
-    await api(`/api/projects/${projectId}/steps/${stepId}/attachments/${attachmentId}`, { method: 'DELETE' });
-    showToast('附件已删除');
-    renderProjectDetail(document.getElementById('content'), projectId);
-  } catch (err) {
-    showToast(err.message, 'error');
-  }
-}
 
 // ============================================================
 // INITIALIZATION
@@ -6587,3 +6270,279 @@ document.addEventListener('DOMContentLoaded', async () => {
     navigate('login', {}, { replace: true });
   }
 });
+
+// ============================================================
+// World Map - World List & Detail Pages
+// ============================================================
+
+async function renderWorlds(el) {
+  el.innerHTML = `
+    <div style="max-width:1200px;margin:0 auto;padding:20px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:12px;">
+        <h2 style="color:var(--text-bright);margin:0;">世界观地图</h2>
+        <button class="btn btn-primary" onclick="showCreateWorldModal()">+ 创建新世界</button>
+      </div>
+      <div id="world-list-container">
+        <p style="color:var(--text-muted);">加载中...</p>
+      </div>
+    </div>
+  `;
+
+  try {
+    const worlds = await API.get('/api/worlds');
+    const container = document.getElementById('world-list-container');
+
+    if (worlds.length === 0) {
+      container.innerHTML = `
+        <div style="text-align:center;padding:60px 20px;color:var(--text-muted);">
+          <div style="font-size:3rem;margin-bottom:16px;">&#127758;</div>
+          <h3 style="color:var(--text-bright);margin-bottom:8px;">还没有创建任何世界</h3>
+          <p>点击"创建新世界"开始构建你的虚构世界观地图</p>
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = `<div class="world-grid">${worlds.map(w => `
+      <div class="world-card" onclick="navigate('world-detail', {id: ${w.id}})">
+        <div class="world-actions">
+          <button onclick="event.stopPropagation();deleteWorld(${w.id},'${escHtml(w.name)}')" title="删除">删除</button>
+        </div>
+        <div class="world-card-cover">
+          ${w.cover_image ? `<img src="${w.cover_image}" alt="">` : '&#127758;'}
+        </div>
+        <h3>${escHtml(w.name)}</h3>
+        <p>${escHtml(w.description || '暂无描述')}</p>
+        <div class="world-meta">
+          <span>${w.map_count || 0} 张地图</span>
+          <span>${formatDate(w.updated_at)}</span>
+        </div>
+      </div>
+    `).join('')}</div>`;
+  } catch (err) {
+    document.getElementById('world-list-container').innerHTML =
+      `<p style="color:var(--danger);">加载失败: ${err.message}</p>`;
+  }
+}
+
+async function renderWorldDetail(el, worldId) {
+  el.innerHTML = `
+    <div style="max-width:1200px;margin:0 auto;padding:20px;">
+      <div style="margin-bottom:16px;">
+        <a onclick="navigate('worlds')" style="color:var(--text-muted);cursor:pointer;text-decoration:none;">&larr; 返回世界列表</a>
+      </div>
+      <div id="world-detail-container">
+        <p style="color:var(--text-muted);">加载中...</p>
+      </div>
+    </div>
+  `;
+
+  try {
+    const world = await API.get(`/api/worlds/${worldId}`);
+    const container = document.getElementById('world-detail-container');
+
+    container.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
+        <div>
+          <h2 style="color:var(--text-bright);margin:0 0 4px;">${escHtml(world.name)}</h2>
+          <p style="color:var(--text-muted);margin:0;">${escHtml(world.description || '暂无描述')}</p>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-secondary" onclick="showEditWorldModal(${world.id})">编辑</button>
+          <button class="btn btn-primary" onclick="showCreateMapModal(${world.id})">+ 新建地图</button>
+        </div>
+      </div>
+
+      <h3 style="color:var(--text);margin-bottom:12px;">地图列表</h3>
+      <div id="map-list-container">
+        ${(world.maps && world.maps.length > 0) ? `
+          <div class="map-list">
+            ${world.maps.map(m => `
+              <div class="map-item">
+                <div class="map-thumb">
+                  ${m.thumbnail ? `<img src="${m.thumbnail}" alt="">` : '&#128506;'}
+                </div>
+                <div class="map-info">
+                  <h4>${escHtml(m.name)}</h4>
+                  <p>${escHtml(m.description || '')}</p>
+                </div>
+                <div style="display:flex;gap:8px;">
+                  <button class="btn btn-primary" onclick="openMapEditor(${m.id}, ${world.id})" style="font-size:0.85rem;">
+                    编辑地图
+                  </button>
+                  <button class="btn btn-secondary" onclick="deleteMap(${m.id}, ${world.id})" style="font-size:0.85rem;color:var(--danger);">
+                    删除
+                  </button>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        ` : `
+          <div style="text-align:center;padding:40px;color:var(--text-muted);">
+            <p>还没有地图，点击"新建地图"开始绘制</p>
+          </div>
+        `}
+      </div>
+
+      ${world.rules ? `
+        <h3 style="color:var(--text);margin:24px 0 12px;">世界设定</h3>
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:16px;color:var(--text);line-height:1.6;">
+          ${escHtml(world.rules)}
+        </div>
+      ` : ''}
+    `;
+  } catch (err) {
+    document.getElementById('world-detail-container').innerHTML =
+      `<p style="color:var(--danger);">加载失败: ${err.message}</p>`;
+  }
+}
+
+// --- Modal Helpers ---
+
+function showCreateWorldModal() {
+  showModal('创建新世界', `
+    <div class="wm-form-group">
+      <label>世界名称 *</label>
+      <input type="text" id="modal-world-name" placeholder="输入世界名称">
+    </div>
+    <div class="wm-form-group">
+      <label>描述</label>
+      <textarea id="modal-world-desc" rows="3" placeholder="简要描述这个世界"></textarea>
+    </div>
+    <div class="wm-form-group">
+      <label>世界设定/规则</label>
+      <textarea id="modal-world-rules" rows="4" placeholder="世界的背景设定、规则等"></textarea>
+    </div>
+    <div class="wm-form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button class="btn btn-primary" onclick="createWorld()">创建</button>
+    </div>
+  `);
+}
+
+async function createWorld() {
+  const name = document.getElementById('modal-world-name').value.trim();
+  if (!name) { alert('请输入世界名称'); return; }
+  try {
+    const world = await API.post('/api/worlds', {
+      name,
+      description: document.getElementById('modal-world-desc').value.trim(),
+      rules: document.getElementById('modal-world-rules').value.trim(),
+    });
+    closeModal();
+    navigate('world-detail', { id: world.id });
+  } catch (err) { alert('创建失败: ' + err.message); }
+}
+
+async function deleteWorld(id, name) {
+  if (!confirm(`确定要删除世界"${name}"吗？所有地图和数据将一并删除。`)) return;
+  try {
+    await API.delete(`/api/worlds/${id}`);
+    navigate('worlds');
+  } catch (err) { alert('删除失败: ' + err.message); }
+}
+
+function showEditWorldModal(id) {
+  API.get(`/api/worlds/${id}`).then(world => {
+    showModal('编辑世界', `
+      <div class="wm-form-group">
+        <label>世界名称</label>
+        <input type="text" id="modal-world-name" value="${escAttr(world.name)}">
+      </div>
+      <div class="wm-form-group">
+        <label>描述</label>
+        <textarea id="modal-world-desc" rows="3">${escHtml(world.description || '')}</textarea>
+      </div>
+      <div class="wm-form-group">
+        <label>世界设定/规则</label>
+        <textarea id="modal-world-rules" rows="4">${escHtml(world.rules || '')}</textarea>
+      </div>
+      <div class="wm-form-actions">
+        <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+        <button class="btn btn-primary" onclick="updateWorld(${id})">保存</button>
+      </div>
+    `);
+  });
+}
+
+async function updateWorld(id) {
+  try {
+    await API.put(`/api/worlds/${id}`, {
+      name: document.getElementById('modal-world-name').value.trim(),
+      description: document.getElementById('modal-world-desc').value.trim(),
+      rules: document.getElementById('modal-world-rules').value.trim(),
+    });
+    closeModal();
+    navigate('world-detail', { id });
+  } catch (err) { alert('更新失败: ' + err.message); }
+}
+
+function showCreateMapModal(worldId) {
+  showModal('新建地图', `
+    <div class="wm-form-group">
+      <label>地图名称 *</label>
+      <input type="text" id="modal-map-name" placeholder="输入地图名称">
+    </div>
+    <div class="wm-form-group">
+      <label>描述</label>
+      <textarea id="modal-map-desc" rows="2" placeholder="简要描述"></textarea>
+    </div>
+    <div style="display:flex;gap:12px;">
+      <div class="wm-form-group" style="flex:1;">
+        <label>画布宽度</label>
+        <input type="number" id="modal-map-width" value="4096">
+      </div>
+      <div class="wm-form-group" style="flex:1;">
+        <label>画布高度</label>
+        <input type="number" id="modal-map-height" value="4096">
+      </div>
+    </div>
+    <div class="wm-form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button class="btn btn-primary" onclick="createMap(${worldId})">创建</button>
+    </div>
+  `);
+}
+
+async function createMap(worldId) {
+  const name = document.getElementById('modal-map-name').value.trim();
+  if (!name) { alert('请输入地图名称'); return; }
+  try {
+    const map = await API.post(`/api/worlds/${worldId}/maps`, {
+      name,
+      description: document.getElementById('modal-map-desc').value.trim(),
+      width: parseInt(document.getElementById('modal-map-width').value) || 4096,
+      height: parseInt(document.getElementById('modal-map-height').value) || 4096,
+    });
+    closeModal();
+    openMapEditor(map.id, worldId);
+  } catch (err) { alert('创建失败: ' + err.message); }
+}
+
+async function deleteMap(mapId, worldId) {
+  if (!confirm('确定要删除此地图吗？')) return;
+  try {
+    await API.delete(`/api/maps/${mapId}`);
+    navigate('world-detail', { id: worldId });
+  } catch (err) { alert('删除失败: ' + err.message); }
+}
+
+function openMapEditor(mapId, worldId) {
+  window.open(`/worldmap.html?map=${mapId}&world=${worldId}`, '_blank');
+}
+
+// --- Utility ---
+function escHtml(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+function escAttr(s) {
+  return (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function formatDate(d) {
+  if (!d) return '';
+  const date = new Date(d);
+  return date.toLocaleDateString('zh-CN') + ' ' + date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+}
