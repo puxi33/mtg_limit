@@ -3916,6 +3916,25 @@ app.get('/api/projects/:projectId/steps/attachments/:attachmentId/download', aut
   res.download(filePath, attachment.original_name);
 });
 
+// View attachment inline (for image preview)
+app.get('/api/projects/:projectId/steps/attachments/:attachmentId/view', authMiddleware, (req, res) => {
+  const { attachmentId } = req.params;
+  const attachment = db.prepare(`
+    SELECT a.* FROM attachments a
+    JOIN steps s ON a.step_id = s.id
+    JOIN projects p ON s.project_id = p.id
+    WHERE a.id = ? AND p.user_id = ?
+  `).get(attachmentId, req.user.id);
+  if (!attachment) return res.status(404).json({ error: '附件不存在' });
+
+  const filePath = path.join(uploadDir, attachment.filename);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: '文件不存在' });
+
+  res.setHeader('Content-Type', attachment.mime_type || 'application/octet-stream');
+  res.setHeader('Content-Disposition', 'inline');
+  fs.createReadStream(filePath).pipe(res);
+});
+
 // ============================================================
 // Home page
 // ============================================================

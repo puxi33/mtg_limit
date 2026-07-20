@@ -12,6 +12,19 @@ function escapeHtml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+function isImageFile(att) {
+  if (att.mime_type && att.mime_type.startsWith('image/')) return true;
+  return /\.(jpe?g|png|gif|webp|svg|bmp|ico)$/i.test(att.original_name || '');
+}
+
+function showImagePreview(url, title) {
+  showModal(title || '图片预览', `
+    <div style="text-align:center">
+      <img src="${url}" style="max-width:100%;max-height:75vh;object-fit:contain;border-radius:4px" alt="${escapeHtml(title || '')}">
+    </div>
+  `);
+}
+
 // ========== API HELPER ==========
 async function api(path, options = {}) {
   const headers = { 'Content-Type': 'application/json' };
@@ -177,14 +190,30 @@ function renderStepTreeNode(node, projectId, depth) {
 
   const attachmentsHtml = (node.attachments && node.attachments.length > 0) ? `
     <div class="step-attachments">
-      ${node.attachments.map(att => `
-        <div class="attachment-item">
-          <span class="attachment-name">${escapeHtml(att.original_name)}</span>
-          <span class="attachment-size">${(att.size / 1024).toFixed(1)} KB</span>
-          <a href="/api/projects/${projectId}/steps/attachments/${att.id}/download" class="btn btn-sm btn-secondary" style="padding:2px 6px;font-size:0.65rem">下载</a>
-          <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteAttachment(${projectId},${node.id},${att.id})" style="padding:2px 6px;font-size:0.65rem">删除</button>
-        </div>
-      `).join('')}
+      ${node.attachments.map(att => {
+        const isImg = isImageFile(att);
+        const viewUrl = `/api/projects/${projectId}/steps/attachments/${att.id}/view`;
+        const dlUrl = `/api/projects/${projectId}/steps/attachments/${att.id}/download`;
+        if (isImg) {
+          return `
+            <div class="attachment-item attachment-image">
+              <img class="attachment-thumb" src="${viewUrl}" alt="${escapeHtml(att.original_name)}" onclick="event.stopPropagation();showImagePreview('${viewUrl}','${escapeHtml(att.original_name)}')" loading="lazy">
+              <div class="attachment-info">
+                <span class="attachment-name">${escapeHtml(att.original_name)}</span>
+                <span class="attachment-size">${(att.size / 1024).toFixed(1)} KB</span>
+              </div>
+              <a href="${dlUrl}" class="btn btn-sm btn-secondary" style="padding:2px 6px;font-size:0.65rem">下载</a>
+              <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteAttachment(${projectId},${node.id},${att.id})" style="padding:2px 6px;font-size:0.65rem">删除</button>
+            </div>`;
+        }
+        return `
+          <div class="attachment-item">
+            <span class="attachment-name">${escapeHtml(att.original_name)}</span>
+            <span class="attachment-size">${(att.size / 1024).toFixed(1)} KB</span>
+            <a href="${dlUrl}" class="btn btn-sm btn-secondary" style="padding:2px 6px;font-size:0.65rem">下载</a>
+            <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteAttachment(${projectId},${node.id},${att.id})" style="padding:2px 6px;font-size:0.65rem">删除</button>
+          </div>`;
+      }).join('')}
     </div>
   ` : '';
 
@@ -414,21 +443,21 @@ async function renderProjectDetail(el, projectId) {
           <h2 style="margin:8px 0">${escapeHtml(project.name)}</h2>
           ${project.remark ? `<p style="color:var(--text-muted);margin:0">${escapeHtml(project.remark)}</p>` : ''}
         </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <div class="detail-actions">
           <button class="btn btn-secondary" onclick="showEditProjectModal(${project.id}, '${escapeHtml(project.name)}', '${escapeHtml(project.remark || '')}')">编辑项目</button>
           <button class="btn btn-primary" onclick="showAddStepModal(${project.id})">添加步骤</button>
         </div>
       </div>
 
-      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:20px;margin-bottom:24px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px">
-          <div>
-            <div style="font-size:0.9rem;color:var(--text-muted)">叶子步骤进度</div>
-            <div style="font-size:2rem;font-weight:600;color:var(--text-bright)">${percent}%</div>
+      <div class="detail-progress-card">
+        <div class="detail-progress-stats">
+          <div class="detail-progress-left">
+            <div class="detail-progress-label">叶子步骤进度</div>
+            <div class="detail-progress-value">${percent}%</div>
           </div>
-          <div style="text-align:right">
-            <div style="font-size:0.9rem;color:var(--text-muted)">完成/总计</div>
-            <div style="font-size:1.5rem;font-weight:600;color:var(--text-bright)">${project.completed_steps}/${project.total_steps}</div>
+          <div class="detail-progress-right">
+            <div class="detail-progress-count-label">完成/总计</div>
+            <div class="detail-progress-count">${project.completed_steps}/${project.total_steps}</div>
           </div>
         </div>
         <div class="progress-bar" style="height:12px">
@@ -436,12 +465,12 @@ async function renderProjectDetail(el, projectId) {
         </div>
       </div>
 
-      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;overflow:hidden">
-        <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+      <div class="detail-tree-card">
+        <div class="detail-tree-header">
           <h3 style="margin:0;color:var(--text-bright)">执行树</h3>
           <span style="font-size:0.8rem;color:var(--text-muted)">${project.steps.length} 个步骤</span>
         </div>
-        <div style="padding:20px">
+        <div class="detail-tree-body">
           ${tree.length === 0 ? '<div style="text-align:center;padding:40px;color:var(--text-muted)"><p>暂无步骤，点击"添加步骤"开始</p></div>' : `
             <div class="step-tree">
               ${tree.map(node => renderStepTreeNode(node, project.id, 0)).join('')}

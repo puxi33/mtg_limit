@@ -4384,23 +4384,48 @@ body.draft-fullscreen #content > .page-header {
 @media (max-width: 768px) {
   .step-actions {
     opacity: 1;
+    width: 100%;
+    margin-top: 2px;
+    padding-left: 26px;
+    gap: 3px;
+  }
+  .step-actions .btn {
+    padding: 2px 6px;
+    font-size: 0.62rem;
   }
   .step-node-row {
-    padding: 6px 8px;
-    gap: 6px;
+    padding: 6px 6px;
+    gap: 5px;
+  }
+  .step-toggle,
+  .step-toggle-placeholder {
+    width: 16px;
+    font-size: 0.6rem;
+  }
+  .step-check {
+    width: 17px;
+    height: 17px;
+    font-size: 0.6rem;
+  }
+  .step-node-name {
+    font-size: 0.82rem;
+  }
+  .step-tree {
+    font-size: 0.82rem;
   }
   .step-children {
-    margin-left: 8px;
-    padding-left: 10px;
+    margin-left: 6px;
+    padding-left: 8px;
   }
   .step-children .step-tree-node::before {
-    left: -10px;
-    width: 8px;
+    left: -8px;
+    width: 6px;
   }
   .step-node-remark,
   .step-attachments,
   .step-upload {
-    padding-left: 28px;
+    padding-left: 24px;
+    font-size: 0.78rem;
   }
 }
 

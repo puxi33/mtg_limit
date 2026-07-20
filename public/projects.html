@@ -132,6 +132,62 @@
     .step-icon.partial {
       color: var(--primary);
     }
+
+    /* Detail page layout */
+    .detail-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .detail-progress-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 24px;
+    }
+    .detail-progress-stats {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .detail-progress-label,
+    .detail-progress-count-label {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }
+    .detail-progress-value {
+      font-size: 2rem;
+      font-weight: 600;
+      color: var(--text-bright);
+    }
+    .detail-progress-count {
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: var(--text-bright);
+      text-align: right;
+    }
+    .detail-tree-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .detail-tree-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .detail-tree-body {
+      padding: 20px;
+    }
+
+    /* Timeline (for step detail view) */
     .timeline {
       position: relative;
       padding-left: 48px;
@@ -153,12 +209,8 @@
       font-weight: 600;
       font-size: 0.9rem;
     }
-    .timeline-marker.completed {
-      background: var(--success);
-    }
-    .timeline-marker.pending {
-      background: var(--warning);
-    }
+    .timeline-marker.completed { background: var(--success); }
+    .timeline-marker.pending { background: var(--warning); }
     .timeline-line {
       position: absolute;
       left: -32px;
@@ -167,9 +219,7 @@
       height: calc(100% + 32px);
       background: var(--border);
     }
-    .timeline-item:last-child .timeline-line {
-      display: none;
-    }
+    .timeline-item:last-child .timeline-line { display: none; }
     .timeline-content {
       background: var(--bg-card);
       border: 1px solid var(--border);
@@ -218,9 +268,7 @@
       background: var(--warning);
       color: white;
     }
-    .attachment-list {
-      margin-top: 12px;
-    }
+    .attachment-list { margin-top: 12px; }
     .attachment-item {
       display: flex;
       align-items: center;
@@ -241,29 +289,205 @@
       color: var(--text-muted);
       font-size: 0.75rem;
     }
+
+    /* Image attachment preview */
+    .attachment-image {
+      gap: 10px;
+    }
+    .attachment-thumb {
+      width: 48px;
+      height: 48px;
+      object-fit: cover;
+      border-radius: 4px;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      flex-shrink: 0;
+      transition: transform 0.15s, border-color 0.15s;
+    }
+    .attachment-thumb:hover {
+      transform: scale(1.08);
+      border-color: var(--primary);
+    }
+    .attachment-info {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    /* ========== MOBILE ========== */
     @media (max-width: 768px) {
+      /* Nav */
       .project-nav {
         flex-direction: column;
         align-items: flex-start;
+        padding: 8px 12px;
+        gap: 6px;
+      }
+      .project-nav-brand {
+        font-size: 1.05rem;
       }
       .project-nav-links {
         width: 100%;
         justify-content: space-between;
         flex-wrap: wrap;
+        gap: 2px;
       }
+      .project-nav-links a {
+        padding: 5px 8px;
+        font-size: 0.78rem;
+      }
+
+      /* Container & header */
       .project-container {
-        padding: 12px;
+        padding: 10px;
       }
       .project-header {
         flex-direction: column;
-        align-items: flex-start;
+        align-items: stretch;
+        gap: 10px;
+        margin-bottom: 16px;
       }
       .project-header h2 {
-        font-size: 1.5rem;
+        font-size: 1.25rem;
       }
+      .project-header .btn {
+        width: 100%;
+        text-align: center;
+      }
+
+      /* Project cards */
       .project-grid {
         grid-template-columns: 1fr;
+        gap: 10px;
       }
+      .project-card {
+        padding: 12px;
+      }
+      .project-card-header {
+        margin-bottom: 10px;
+      }
+      .project-card-header h3 {
+        font-size: 1rem;
+      }
+
+      /* Step preview in cards */
+      .step-preview {
+        padding-top: 8px;
+        margin-top: 8px;
+      }
+      .step-item {
+        font-size: 0.78rem;
+        gap: 6px;
+        margin-bottom: 4px;
+      }
+      .step-icon {
+        font-size: 0.9rem;
+      }
+
+      /* Detail page */
+      .detail-actions {
+        width: 100%;
+      }
+      .detail-actions .btn {
+        flex: 1;
+        text-align: center;
+        font-size: 0.85rem;
+        padding: 8px 10px;
+      }
+      .detail-progress-card {
+        padding: 14px;
+        margin-bottom: 16px;
+      }
+      .detail-progress-stats {
+        margin-bottom: 12px;
+        gap: 8px;
+      }
+      .detail-progress-value {
+        font-size: 1.5rem;
+      }
+      .detail-progress-count {
+        font-size: 1.2rem;
+      }
+      .detail-progress-label,
+      .detail-progress-count-label {
+        font-size: 0.78rem;
+      }
+      .detail-tree-header {
+        padding: 10px 12px;
+      }
+      .detail-tree-header h3 {
+        font-size: 1rem;
+      }
+      .detail-tree-body {
+        padding: 10px 8px;
+      }
+
+      /* Tree nodes */
+      .step-tree {
+        font-size: 0.82rem;
+      }
+      .step-node-row {
+        padding: 6px 6px;
+        gap: 5px;
+      }
+      .step-toggle,
+      .step-toggle-placeholder {
+        width: 16px;
+        font-size: 0.6rem;
+      }
+      .step-check {
+        width: 17px;
+        height: 17px;
+        font-size: 0.6rem;
+      }
+      .step-node-name {
+        font-size: 0.82rem;
+      }
+      .step-actions {
+        opacity: 1;
+        width: 100%;
+        margin-top: 2px;
+        padding-left: 26px;
+        gap: 3px;
+      }
+      .step-actions .btn {
+        padding: 2px 6px;
+        font-size: 0.62rem;
+      }
+      .step-children {
+        margin-left: 6px;
+        padding-left: 8px;
+      }
+      .step-children .step-tree-node::before {
+        left: -8px;
+        width: 6px;
+      }
+      .step-node-remark,
+      .step-attachments,
+      .step-upload {
+        padding-left: 24px;
+        font-size: 0.78rem;
+      }
+
+      /* Modal */
+      .modal-content {
+        width: 96%;
+        max-height: 88vh;
+        border-radius: 8px;
+      }
+      .modal-header {
+        padding: 12px 14px 8px;
+      }
+      .modal-header h3 {
+        font-size: 1rem;
+      }
+      .modal-body {
+        padding: 12px 14px;
+      }
+
+      /* Timeline mobile */
       .timeline {
         padding-left: 36px;
       }
@@ -280,11 +504,25 @@
         flex-direction: column;
         align-items: flex-start;
       }
+      .timeline-content {
+        padding: 12px;
+      }
       .complete-btn {
         width: 100%;
       }
+
+      /* Attachments */
       .attachment-item {
         flex-wrap: wrap;
+        font-size: 0.78rem;
+        padding: 6px;
+      }
+      .attachment-thumb {
+        width: 36px;
+        height: 36px;
+      }
+      .attachment-image {
+        gap: 8px;
       }
     }
   </style>
