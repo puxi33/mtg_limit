@@ -25,8 +25,8 @@ COPY package.json ./
 COPY public ./public
 COPY data/playlists ./default_playlists
 
-# Create data directory (SQLite DB + Scryfall cache)
-RUN mkdir -p data && chown -R node:node data /app
+# Create data and uploads directories
+RUN mkdir -p data uploads && chown -R node:node data uploads /app
 
 # Run as non-root user for security
 USER node

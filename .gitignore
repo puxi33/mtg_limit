@@ -4,6 +4,9 @@ node_modules/
 # Runtime data (SQLite database + Scryfall cache)
 data/
 
+# Uploaded attachments
+uploads/
+
 # Logs
 *.log
 *.err.log

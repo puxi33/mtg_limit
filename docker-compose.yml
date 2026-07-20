@@ -10,6 +10,8 @@ services:
     volumes:
       # Persist SQLite database and Scryfall card cache
       - mtg-data:/app/data
+      # Persist uploaded attachments
+      - mtg-uploads:/app/uploads
     environment:
       - NODE_ENV=production
       # Change this in production!
@@ -23,4 +25,6 @@ services:
 
 volumes:
   mtg-data:
+    driver: local
+  mtg-uploads:
     driver: local
