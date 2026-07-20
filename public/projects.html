@@ -24,24 +24,45 @@
     }
     .project-nav-links {
       display: flex;
-      gap: 16px;
+      gap: 12px;
       align-items: center;
     }
-    .project-nav-links a {
-      color: var(--text-muted);
-      text-decoration: none;
-      padding: 6px 12px;
-      border-radius: 4px;
-      transition: all 0.2s;
-      font-size: 0.9rem;
-    }
-    .project-nav-links a:hover {
+    .nav-user-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
       background: var(--bg-hover);
+      padding: 5px 12px;
+      border-radius: 20px;
+      font-size: 0.85rem;
       color: var(--text-bright);
     }
-    .project-nav-links a.active {
+    .nav-user-avatar {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
       background: var(--primary);
       color: white;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .nav-logout-btn {
+      color: var(--text-muted);
+      text-decoration: none;
+      padding: 5px 12px;
+      border-radius: 4px;
+      transition: all 0.2s;
+      font-size: 0.85rem;
+      cursor: pointer;
+      border: 1px solid var(--border);
+    }
+    .nav-logout-btn:hover {
+      background: var(--danger, #e74c3c);
+      color: white;
+      border-color: var(--danger, #e74c3c);
     }
     .project-container {
       max-width: 1200px;
@@ -316,6 +337,45 @@
       gap: 2px;
     }
 
+    /* Filter bar */
+    .filter-bar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .filter-btn {
+      padding: 5px 14px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 0.82rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .filter-btn:hover {
+      border-color: var(--primary);
+      color: var(--text-bright);
+    }
+    .filter-btn.active {
+      background: var(--primary);
+      color: white;
+      border-color: var(--primary);
+    }
+
+    /* Drag and drop */
+    .project-card[draggable="true"] {
+      cursor: grab;
+    }
+    .project-card.dragging {
+      opacity: 0.4;
+      transform: scale(0.97);
+    }
+    .project-card.drag-over {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px var(--primary);
+    }
+
     /* ========== MOBILE ========== */
     @media (max-width: 768px) {
       /* Nav */
@@ -330,12 +390,21 @@
       }
       .project-nav-links {
         width: 100%;
-        justify-content: space-between;
+        justify-content: flex-end;
         flex-wrap: wrap;
-        gap: 2px;
+        gap: 8px;
       }
-      .project-nav-links a {
-        padding: 5px 8px;
+      .nav-user-badge {
+        font-size: 0.78rem;
+        padding: 4px 10px;
+      }
+      .nav-user-avatar {
+        width: 20px;
+        height: 20px;
+        font-size: 0.65rem;
+      }
+      .nav-logout-btn {
+        padding: 4px 10px;
         font-size: 0.78rem;
       }
 
@@ -348,6 +417,18 @@
         align-items: stretch;
         gap: 10px;
         margin-bottom: 16px;
+      }
+      .project-header > div {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .filter-bar {
+        flex-wrap: wrap;
+      }
+      .filter-btn {
+        flex: 1;
+        text-align: center;
+        padding: 6px 10px;
       }
       .project-header h2 {
         font-size: 1.25rem;
@@ -531,10 +612,11 @@
   <nav class="project-nav">
     <div class="project-nav-brand" onclick="navigate('projects')">项目管理</div>
     <div class="project-nav-links">
-      <a onclick="navigate('projects')" data-page="projects">项目列表</a>
-      <a href="/" style="color:var(--text-muted)">返回主站</a>
-      <span id="nav-username" style="color:var(--text-muted);font-size:0.85rem"></span>
-      <a onclick="logout()" style="cursor:pointer">退出</a>
+      <span class="nav-user-badge">
+        <span class="nav-user-avatar" id="nav-avatar"></span>
+        <span id="nav-username"></span>
+      </span>
+      <a class="nav-logout-btn" onclick="logout()">退出</a>
     </div>
   </nav>
 

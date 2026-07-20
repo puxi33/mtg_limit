@@ -3,7 +3,9 @@ const state = {
   token: null,
   user: null,
   currentPage: 'projects',
-  pageData: {}
+  pageData: {},
+  projectFilter: 'all',
+  allProjects: []
 };
 
 // ========== UTILITY ==========
@@ -108,6 +110,8 @@ async function handleAuth(e) {
     state.token = data.token;
     state.user = data.user;
     document.getElementById('nav-username').textContent = data.user.username;
+    const avatar = document.getElementById('nav-avatar');
+    if (avatar) avatar.textContent = data.user.username.charAt(0).toUpperCase();
     showToast(`欢迎, ${data.user.username}!`);
     navigate('projects');
   } catch (err) {
@@ -335,61 +339,154 @@ async function renderProjects(el) {
   el.innerHTML = '<div style="text-align:center;padding:40px">加载中...</div>';
   try {
     const projects = await api('/api/projects');
-    el.innerHTML = `
-      <div class="project-header">
-        <h2>我的项目</h2>
-        <button class="btn btn-primary" onclick="showCreateProjectModal()">新建项目</button>
-      </div>
-      <div class="project-grid">
-        ${projects.map(project => {
-          const percent = project.total_steps > 0 ? Math.round((project.completed_steps / project.total_steps) * 100) : 0;
-          const statusText = project.total_steps === 0 ? '未开始' : (percent === 100 ? '已完成' : '进行中');
-          const statusClass = project.total_steps === 0 ? 'waiting' : (percent === 100 ? 'completed' : 'progress');
-          const tree = buildStepTree(project.steps || []);
-          return `
-          <div class="project-card" onclick="navigate('project-detail', {id:${project.id}})">
-            <div class="project-card-header">
-              <h3>${escapeHtml(project.name)}</h3>
-              <span class="badge badge-${statusClass}">${statusText}</span>
-            </div>
-            ${project.remark ? `<p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:12px">${escapeHtml(project.remark)}</p>` : ''}
-            <div class="progress-bar">
-              <div class="progress-fill ${percent === 100 ? 'complete' : ''}" style="width:${percent}%"></div>
-            </div>
-            <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:8px">
-              ${project.completed_steps}/${project.total_steps} 叶子步骤已完成 (${percent}%)
-            </div>
-            ${tree.length > 0 ? `
-              <div class="step-preview">
-                ${tree.slice(0, 3).map(step => {
-                  const status = getNodeStatus(step);
-                  const icon = status === 'completed' ? '✓' : (status === 'partial' ? '◐' : '○');
-                  const leafInfo = step.children.length > 0
-                    ? (() => { const l = countLeaves(step.children); return `<span style="font-size:0.7rem;color:var(--text-muted)">(${l.done}/${l.total})</span>`; })()
-                    : '';
-                  return `
-                  <div class="step-item">
-                    <span class="step-icon ${status}">${icon}</span>
-                    <span style="color:var(--text-muted)">${escapeHtml(step.name)}</span>
-                    ${leafInfo}
-                  </div>`;
-                }).join('')}
-                ${tree.length > 3 ? `<div style="font-size:0.75rem;color:var(--text-muted)">...还有 ${tree.length - 3} 个顶层步骤</div>` : ''}
-              </div>
-            ` : ''}
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-              <span style="font-size:0.75rem;color:var(--text-muted)">${new Date(project.created_at).toLocaleDateString()}</span>
-              <div style="display:flex;gap:6px">
-                <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();showProjectTreeModal(${project.id},'${escapeHtml(project.name)}')" style="padding:4px 12px;font-size:0.75rem">执行树</button>
-                <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteProject(${project.id})" style="padding:4px 12px;font-size:0.75rem">删除</button>
-              </div>
-            </div>
-          </div>`;
-        }).join('') || '<div style="text-align:center;padding:60px;color:var(--text-muted)"><h3>暂无项目</h3><p>点击"新建项目"开始</p></div>'}
-      </div>
-    `;
+    state.allProjects = projects;
+    renderProjectList(el);
   } catch (err) {
     el.innerHTML = `<div style="text-align:center;padding:60px"><h3>加载失败</h3><p style="color:var(--text-muted)">${err.message}</p></div>`;
+  }
+}
+
+function getFilteredProjects() {
+  return state.allProjects.filter(p => {
+    if (state.projectFilter === 'all') return true;
+    const percent = p.total_steps > 0 ? Math.round((p.completed_steps / p.total_steps) * 100) : 0;
+    if (state.projectFilter === 'completed') return p.total_steps > 0 && percent === 100;
+    if (state.projectFilter === 'incomplete') return p.total_steps === 0 || percent < 100;
+    return true;
+  });
+}
+
+function setFilter(filter) {
+  state.projectFilter = filter;
+  renderProjectList(document.getElementById('content'));
+}
+
+function renderProjectList(el) {
+  const filtered = getFilteredProjects();
+  el.innerHTML = `
+    <div class="project-header">
+      <h2>我的项目</h2>
+      <div style="display:flex;gap:12px;align-items:center">
+        <div class="filter-bar">
+          <button class="filter-btn ${state.projectFilter === 'all' ? 'active' : ''}" onclick="setFilter('all')">全部</button>
+          <button class="filter-btn ${state.projectFilter === 'incomplete' ? 'active' : ''}" onclick="setFilter('incomplete')">未完成</button>
+          <button class="filter-btn ${state.projectFilter === 'completed' ? 'active' : ''}" onclick="setFilter('completed')">已完成</button>
+        </div>
+        <button class="btn btn-primary" onclick="showCreateProjectModal()">新建项目</button>
+      </div>
+    </div>
+    <div class="project-grid" id="project-grid">
+      ${filtered.map(project => {
+        const percent = project.total_steps > 0 ? Math.round((project.completed_steps / project.total_steps) * 100) : 0;
+        const statusText = project.total_steps === 0 ? '未开始' : (percent === 100 ? '已完成' : '进行中');
+        const statusClass = project.total_steps === 0 ? 'waiting' : (percent === 100 ? 'completed' : 'progress');
+        const tree = buildStepTree(project.steps || []);
+        return `
+        <div class="project-card" draggable="true" data-project-id="${project.id}"
+          onclick="navigate('project-detail', {id:${project.id}})"
+          ondragstart="onDragStart(event)" ondragend="onDragEnd(event)"
+          ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">
+          <div class="project-card-header">
+            <h3>${escapeHtml(project.name)}</h3>
+            <span class="badge badge-${statusClass}">${statusText}</span>
+          </div>
+          ${project.remark ? `<p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:12px">${escapeHtml(project.remark)}</p>` : ''}
+          <div class="progress-bar">
+            <div class="progress-fill ${percent === 100 ? 'complete' : ''}" style="width:${percent}%"></div>
+          </div>
+          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:8px">
+            ${project.completed_steps}/${project.total_steps} 叶子步骤已完成 (${percent}%)
+          </div>
+          ${tree.length > 0 ? `
+            <div class="step-preview">
+              ${tree.slice(0, 3).map(step => {
+                const status = getNodeStatus(step);
+                const icon = status === 'completed' ? '✓' : (status === 'partial' ? '◐' : '○');
+                const leafInfo = step.children.length > 0
+                  ? (() => { const l = countLeaves(step.children); return `<span style="font-size:0.7rem;color:var(--text-muted)">(${l.done}/${l.total})</span>`; })()
+                  : '';
+                return `
+                <div class="step-item">
+                  <span class="step-icon ${status}">${icon}</span>
+                  <span style="color:var(--text-muted)">${escapeHtml(step.name)}</span>
+                  ${leafInfo}
+                </div>`;
+              }).join('')}
+              ${tree.length > 3 ? `<div style="font-size:0.75rem;color:var(--text-muted)">...还有 ${tree.length - 3} 个顶层步骤</div>` : ''}
+            </div>
+          ` : ''}
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+            <span style="font-size:0.75rem;color:var(--text-muted)">${new Date(project.created_at).toLocaleDateString()}</span>
+            <div style="display:flex;gap:6px">
+              <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();showProjectTreeModal(${project.id},'${escapeHtml(project.name)}')" style="padding:4px 12px;font-size:0.75rem">执行树</button>
+              <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteProject(${project.id})" style="padding:4px 12px;font-size:0.75rem">删除</button>
+            </div>
+          </div>
+        </div>`;
+      }).join('') || '<div style="text-align:center;padding:60px;color:var(--text-muted)"><h3>暂无项目</h3><p>当前筛选条件下没有匹配的项目</p></div>'}
+    </div>
+  `;
+}
+
+// ========== DRAG AND DROP ==========
+let dragSrcId = null;
+
+function onDragStart(e) {
+  const card = e.target.closest('.project-card');
+  if (!card) return;
+  dragSrcId = card.dataset.projectId;
+  card.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', dragSrcId);
+}
+
+function onDragEnd(e) {
+  const card = e.target.closest('.project-card');
+  if (card) card.classList.remove('dragging');
+  document.querySelectorAll('.project-card').forEach(c => c.classList.remove('drag-over'));
+  dragSrcId = null;
+}
+
+function onDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const card = e.target.closest('.project-card');
+  if (card && card.dataset.projectId !== dragSrcId) {
+    card.classList.add('drag-over');
+  }
+}
+
+function onDragLeave(e) {
+  const card = e.target.closest('.project-card');
+  if (card) card.classList.remove('drag-over');
+}
+
+async function onDrop(e) {
+  e.preventDefault();
+  const targetCard = e.target.closest('.project-card');
+  if (!targetCard || !dragSrcId) return;
+  targetCard.classList.remove('drag-over');
+
+  const targetId = targetCard.dataset.projectId;
+  if (targetId === dragSrcId) return;
+
+  const srcIdx = state.allProjects.findIndex(p => String(p.id) === String(dragSrcId));
+  const tgtIdx = state.allProjects.findIndex(p => String(p.id) === String(targetId));
+  if (srcIdx === -1 || tgtIdx === -1) return;
+
+  const [moved] = state.allProjects.splice(srcIdx, 1);
+  state.allProjects.splice(tgtIdx, 0, moved);
+
+  const orderedIds = state.allProjects.map(p => p.id);
+  renderProjectList(document.getElementById('content'));
+
+  try {
+    await api('/api/projects/reorder', {
+      method: 'PUT',
+      body: JSON.stringify({ orderedIds })
+    });
+  } catch (err) {
+    showToast('排序保存失败: ' + err.message, 'error');
   }
 }
 

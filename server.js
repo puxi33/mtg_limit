@@ -575,6 +575,7 @@ ensureColumn('battles', 'bracket', "bracket TEXT DEFAULT 'winners'");
 ensureColumn('decks', 'outside_game', "outside_game TEXT DEFAULT '[]'");
 ensureColumn('users', 'role', "role TEXT DEFAULT 'user'");
 ensureColumn('steps', 'parent_id', "parent_id INTEGER DEFAULT NULL");
+ensureColumn('projects', 'sort_order', "sort_order INTEGER DEFAULT 0");
 
 // ============================================================
 // Middleware
@@ -3639,7 +3640,7 @@ app.get('/api/projects', authMiddleware, (req, res) => {
     SELECT p.*
     FROM projects p
     WHERE p.user_id = ?
-    ORDER BY p.created_at DESC
+    ORDER BY p.sort_order ASC, p.created_at DESC
   `).all(req.user.id);
 
   const allSteps = db.prepare(`
@@ -3713,6 +3714,22 @@ app.post('/api/projects', authMiddleware, (req, res) => {
   const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(result.lastInsertRowid);
 
   res.status(201).json({ ...project, steps: [] });
+});
+
+// Reorder projects (must be before :id routes)
+app.put('/api/projects/reorder', authMiddleware, (req, res) => {
+  const { orderedIds } = req.body;
+  if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+    return res.status(400).json({ error: '无效的参数' });
+  }
+  const updateOrder = db.transaction(() => {
+    orderedIds.forEach((id, index) => {
+      db.prepare('UPDATE projects SET sort_order = ? WHERE id = ? AND user_id = ?')
+        .run(index, id, req.user.id);
+    });
+  });
+  updateOrder();
+  res.json({ success: true });
 });
 
 // Update project
