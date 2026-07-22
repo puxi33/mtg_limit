@@ -20,7 +20,7 @@ async function renderEvents(el) {
             ${String(ev.user_id) === String(state.user?.id) ? `<button class="btn btn-sm card-delete-btn" onclick="event.stopPropagation();deleteEvent(${ev.id})" title="删除赛事">&times;</button>` : ''}
             <h3>${ev.name}</h3>
             <span class="badge badge-${ev.type}">${ev.type === 'draft' ? '轮抓' : '现开'}</span>
-            <span class="badge" style="background:${(ev.settings && ev.settings.format || 'bo3') === 'bo1' ? '#e74c3c' : '#3498db'};font-size:0.7rem">${(ev.settings && ev.settings.format || 'bo3') === 'bo1' ? 'BO1' : 'BO3'}</span>
+            <span class="badge" style="background:${(ev.settings && ev.settings.format || 'bo3') === 'bo1' ? '#e74c3c' : (ev.settings && ev.settings.format) === 'multiplayer' ? '#9b59b6' : '#3498db'};font-size:0.7rem">${(ev.settings && ev.settings.format || 'bo3') === 'bo1' ? 'BO1' : (ev.settings && ev.settings.format) === 'multiplayer' ? '多人' : 'BO3'}</span>
             <span class="badge badge-${ev.status === 'waiting' ? 'waiting' : ev.status === 'in_progress' ? 'progress' : 'completed'}">
               ${ev.status === 'waiting' ? '等待中' : ev.status === 'in_progress' ? '进行中' : '已完成'}
             </span>
@@ -89,6 +89,7 @@ async function showCreateEventModal() {
           <select id="event-format">
             <option value="bo1">BO1 (一局定胜负)</option>
             <option value="bo3" selected>BO3 (三局两胜)</option>
+            <option value="multiplayer">多人对战</option>
           </select>
         </div>
         <div class="form-group">
@@ -287,12 +288,18 @@ async function renderEventDetail(el, id) {
     });
     const standingsArr = Object.values(standings).sort((a, b) => b.wins - a.wins || a.losses - b.losses);
 
+    // Helper: check if current user is in a battle (1v1 or multiplayer)
+    function isUserInBattle(b, uid) {
+      if (b.battle_type === 'multiplayer') return (b.players || []).some(function(p) { return p.user_id === uid; });
+      return b.player1_id === uid || b.player2_id === uid;
+    }
+
     // My active battle (if any)
     const myActiveBattle = (eventBattles || []).find(b =>
-      b.status === 'in_progress' && (b.player1_id === state.user?.id || b.player2_id === state.user?.id)
+      b.status === 'in_progress' && isUserInBattle(b, state.user?.id)
     );
     const myWaitingBattle = (eventBattles || []).find(b =>
-      b.status === 'waiting' && b.player1_id === state.user?.id
+      b.status === 'waiting' && isUserInBattle(b, state.user?.id)
     );
 
     // Tournament state
@@ -345,7 +352,7 @@ async function renderEventDetail(el, id) {
           <h2>${event.name}</h2>
           <div style="margin-top:4px">
             <span class="badge badge-${event.type}">${event.type === 'draft' ? '轮抓' : '现开'}</span>
-            <span class="badge" style="background:${(settings.format || 'bo3') === 'bo1' ? '#e74c3c' : '#3498db'}">${(settings.format || 'bo3') === 'bo1' ? 'BO1' : 'BO3'}</span>
+            <span class="badge" style="background:${(settings.format || 'bo3') === 'bo1' ? '#e74c3c' : settings.format === 'multiplayer' ? '#9b59b6' : '#3498db'}">${(settings.format || 'bo3') === 'bo1' ? 'BO1' : settings.format === 'multiplayer' ? '多人对战' : 'BO3'}</span>
             <span class="badge badge-${event.status === 'waiting' ? 'waiting' : event.status === 'in_progress' ? 'progress' : 'completed'}">
               ${event.status === 'waiting' ? '等待中' : event.status === 'in_progress' ? '进行中' : '已完成'}
             </span>
@@ -418,20 +425,27 @@ async function renderEventDetail(el, id) {
             ${myActiveBattle ? `
               <div style="margin-bottom:8px">
                 <strong style="color:var(--text-bright)">
-                  第${myActiveBattle.round || 1}轮: ${myActiveBattle.player1_name} vs ${myActiveBattle.player2_name}
+                  ${myActiveBattle.battle_type === 'multiplayer'
+                    ? '多人对战 (' + (myActiveBattle.players || []).length + '人)'
+                    : '第' + (myActiveBattle.round || 1) + '轮: ' + myActiveBattle.player1_name + ' vs ' + myActiveBattle.player2_name}
                 </strong>
-                <span class="text-muted" style="font-size:0.85rem;margin-left:8px">
-                  第${myActiveBattle.current_game || 1}局 | ${myActiveBattle.player1_wins || 0}-${myActiveBattle.player2_wins || 0}
-                </span>
+                ${myActiveBattle.battle_type === 'multiplayer'
+                  ? '<div class="text-muted" style="font-size:0.85rem;margin-top:4px">' + (myActiveBattle.players || []).map(function(p) { return p.username; }).join(', ') + '</div>'
+                  : '<span class="text-muted" style="font-size:0.85rem;margin-left:8px">第' + (myActiveBattle.current_game || 1) + '局 | ' + (myActiveBattle.player1_wins || 0) + '-' + (myActiveBattle.player2_wins || 0) + '</span>'}
               </div>
               <button class="btn btn-primary btn-sm" onclick="openBattle(${myActiveBattle.id})">进入对战</button>
             ` : myWaitingBattle ? `
               <div style="margin-bottom:8px">
                 <strong style="color:var(--text-bright)">
-                  第${myWaitingBattle.round || 1}轮: ${myWaitingBattle.player1_name} vs ${myWaitingBattle.player2_name}
+                  ${myWaitingBattle.battle_type === 'multiplayer'
+                    ? '多人对战 (' + (myWaitingBattle.players || []).length + '人)'
+                    : '第' + (myWaitingBattle.round || 1) + '轮: ' + myWaitingBattle.player1_name + ' vs ' + myWaitingBattle.player2_name}
                 </strong>
+                ${myWaitingBattle.battle_type === 'multiplayer'
+                  ? '<div class="text-muted" style="font-size:0.85rem;margin-top:4px">' + (myWaitingBattle.players || []).map(function(p) { return p.username; }).join(', ') + '</div>'
+                  : ''}
               </div>
-              <div class="text-muted" style="font-size:0.85rem">等待双方就绪，由创建者开始对战</div>
+              <div class="text-muted" style="font-size:0.85rem">${myWaitingBattle.battle_type === 'multiplayer' ? '等待所有玩家就绪，由创建者开始对战' : '等待双方就绪，由创建者开始对战'}</div>
               <button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="openBattle(${myWaitingBattle.id})">进入对战</button>
             ` : myEliminated ? `
               <p class="text-muted" style="color:var(--danger)">你已被淘汰</p>
@@ -446,11 +460,17 @@ async function renderEventDetail(el, id) {
         <!-- Tournament Controls (owner only) -->
         ${isOwner && (eventBattles || []).length === 0 && myDeck ? `
           <div style="margin-bottom:24px;padding:16px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);text-align:center">
-            <h3 style="color:var(--text-bright);margin-bottom:8px">双败淘汰配对</h3>
-            <p class="text-muted" style="margin-bottom:12px">所有玩家构建完牌组后，点击自动配对开始第一轮（胜者组+败者组双败淘汰制）</p>
-            <button class="btn btn-primary" onclick="autoPairEvent(${id})">自动配对</button>
+            ${settings.format === 'multiplayer' ? `
+              <h3 style="color:var(--text-bright);margin-bottom:8px">多人对战</h3>
+              <p class="text-muted" style="margin-bottom:12px">所有玩家构建完牌组后，点击创建多人对战（所有玩家自动加入同一场对战）</p>
+              <button class="btn btn-primary" onclick="startMultiplayerBattle(${id})">开始多人对战</button>
+            ` : `
+              <h3 style="color:var(--text-bright);margin-bottom:8px">双败淘汰配对</h3>
+              <p class="text-muted" style="margin-bottom:12px">所有玩家构建完牌组后，点击自动配对开始第一轮（胜者组+败者组双败淘汰制）</p>
+              <button class="btn btn-primary" onclick="autoPairEvent(${id})">自动配对</button>
+            `}
           </div>
-        ` : isOwner && allBattlesCompleted ? `
+        ` : isOwner && allBattlesCompleted && settings.format !== 'multiplayer' ? `
           <div style="margin-bottom:24px;padding:16px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);text-align:center">
             <h3 style="color:var(--text-bright);margin-bottom:8px">所有对战已结束</h3>
             <p class="text-muted" style="margin-bottom:12px">点击配对下一轮（胜者组/败者组/总决赛自动推进）</p>
@@ -467,12 +487,38 @@ async function renderEventDetail(el, id) {
         </div>
       ` : ''}
 
-      <!-- Event Battles (grouped by round, with bracket labels) -->
+      <!-- Event Battles -->
       ${(eventBattles || []).length > 0 ? `
         <div style="margin-bottom:24px">
+          ${(() => {
+            const mpBattle = (eventBattles || []).find(b => b.battle_type === 'multiplayer');
+            if (!mpBattle) return '';
+            const players = mpBattle.players || [];
+            const statusLabel = mpBattle.status === 'completed' ? '已结束' : mpBattle.status === 'in_progress' ? '进行中' : '等待中';
+            const statusClass = mpBattle.status === 'completed' ? 'completed' : mpBattle.status === 'in_progress' ? 'progress' : 'waiting';
+            const isPlayer = players.some(function(p) { return p.user_id === state.user?.id; });
+            return '<h3 style="color:var(--text-bright);margin-bottom:12px">多人对战</h3>' +
+              '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px">' +
+                '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">' +
+                  '<div style="display:flex;align-items:center;gap:8px">' +
+                    '<span class="badge" style="background:#9b59b6;color:#fff;font-size:0.7rem">多人</span>' +
+                    '<strong style="color:var(--text-bright)">' + players.length + '人对战</strong>' +
+                    '<span class="badge badge-' + statusClass + '">' + statusLabel + '</span>' +
+                  '</div>' +
+                  (isPlayer ? '<button class="btn btn-secondary btn-sm" onclick="openBattle(' + mpBattle.id + ')">' + (mpBattle.status === 'completed' ? '查看' : '进入') + '</button>' : '') +
+                '</div>' +
+                '<div style="display:flex;flex-wrap:wrap;gap:8px">' +
+                  players.map(function(p) {
+                    var isMe = p.user_id === state.user?.id;
+                    return '<span style="padding:4px 10px;background:' + (isMe ? 'var(--primary)' : 'var(--surface)') + ';color:' + (isMe ? '#fff' : 'var(--text-bright)') + ';border-radius:12px;font-size:0.85rem">' + (p.username || '?') + '</span>';
+                  }).join('') +
+                '</div>' +
+              '</div>';
+          })()}
+          ${(eventBattles || []).some(function(b) { return b.battle_type !== 'multiplayer'; }) ? `
           <h3 style="color:var(--text-bright);margin-bottom:12px">双败淘汰赛</h3>
-          ${[...new Set((eventBattles || []).map(b => b.round || 1))].sort((a, b) => a - b).map(round => {
-            const roundBattles = (eventBattles || []).filter(b => (b.round || 1) === round);
+          ${[...new Set((eventBattles || []).filter(function(b) { return b.battle_type !== 'multiplayer'; }).map(b => b.round || 1))].sort((a, b) => a - b).map(round => {
+            const roundBattles = (eventBattles || []).filter(function(b) { return b.battle_type !== 'multiplayer' && (b.round || 1) === round; });
             const roundDone = roundBattles.every(b => b.status === 'completed');
             const hasWinners = roundBattles.some(b => b.bracket === 'winners');
             const hasLosers = roundBattles.some(b => b.bracket === 'losers');
@@ -517,6 +563,7 @@ async function renderEventDetail(el, id) {
               </div>
             `;
           }).join('')}
+          ` : ''}
         </div>
       ` : ''}
 
@@ -683,6 +730,15 @@ async function autoPairEvent(eventId) {
     var msg = '已创建 ' + result.battles.length + ' 场对战';
     if (result.bye_player) msg += '，' + result.bye_player.name + ' 轮空晋级';
     showToast(msg);
+    navigate('event-detail', { id: eventId });
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function startMultiplayerBattle(eventId) {
+  try {
+    if (!confirm('确定要使用所有已构建牌组的玩家创建多人对战吗？')) return;
+    const result = await api(`/api/events/${eventId}/multiplayer-battle`, { method: 'POST' });
+    showToast('已创建多人对战，共 ' + result.player_count + ' 名玩家');
     navigate('event-detail', { id: eventId });
   } catch (err) { showToast(err.message, 'error'); }
 }

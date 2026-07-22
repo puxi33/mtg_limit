@@ -2300,6 +2300,11 @@ app.get('/api/events/:id/battles', authMiddleware, (req, res) => {
     b.player1_deck = JSON.parse(b.player1_deck || '{}');
     b.player2_deck = JSON.parse(b.player2_deck || '{}');
     b.game_state = JSON.parse(b.game_state || '{}');
+    b.players = db.prepare(`
+      SELECT bp.user_id, bp.position, u.username FROM battle_players bp
+      LEFT JOIN users u ON bp.user_id = u.id
+      WHERE bp.battle_id = ? ORDER BY bp.position
+    `).all(b.id);
   });
   res.json(battles);
 });
@@ -2377,6 +2382,70 @@ app.post('/api/events/:id/auto-pair', authMiddleware, (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('[auto-pair] error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Multiplayer battle: create a single multiplayer game with all players who have decks
+app.post('/api/events/:id/multiplayer-battle', authMiddleware, (req, res) => {
+  try {
+    const event = db.prepare('SELECT * FROM events WHERE id = ?').get(req.params.id);
+    if (!event) return res.status(404).json({ error: '活动不存在' });
+    if (!isAdmin(req) && event.user_id !== req.user.id) return res.status(403).json({ error: '只有创建者可以操作' });
+
+    const existingBattles = db.prepare('SELECT COUNT(*) as cnt FROM battles WHERE event_id = ?').get(req.params.id);
+    if (existingBattles.cnt > 0) return res.status(400).json({ error: '已有对战存在，不能重复创建' });
+
+    const players = db.prepare(`
+      SELECT DISTINCT d.user_id, d.id as deck_id, d.name as deck_name,
+             d.main_deck, d.sideboard, d.outside_game, u.username
+      FROM decks d
+      JOIN users u ON d.user_id = u.id
+      WHERE d.event_id = ?
+      ORDER BY d.created_at ASC
+    `).all(req.params.id);
+
+    const seen = new Set();
+    const unique = [];
+    for (const p of players) {
+      if (!seen.has(p.user_id)) {
+        seen.add(p.user_id);
+        unique.push(p);
+      }
+    }
+
+    if (unique.length < 2) return res.status(400).json({ error: '至少需要2个玩家有牌组才能创建多人对战' });
+
+    const playerCount = unique.length;
+    const battleName = event.name + ' - 多人对战';
+    const result = db.prepare(
+      'INSERT INTO battles (name, player1_id, event_id, status, battle_type, format_type, player_count) VALUES (?,?,?,?,?,?,?)'
+    ).run(battleName, event.user_id, req.params.id, 'waiting', 'multiplayer', 'limited', playerCount);
+    const battleId = result.lastInsertRowid;
+
+    const insertPlayer = db.prepare(
+      'INSERT INTO battle_players (battle_id, user_id, deck, position) VALUES (?,?,?,?)'
+    );
+    unique.forEach(function(p, idx) {
+      const deck = {
+        name: p.deck_name,
+        main_deck: JSON.parse(p.main_deck),
+        sideboard: JSON.parse(p.sideboard),
+        outside_game: JSON.parse(p.outside_game || '[]')
+      };
+      insertPlayer.run(battleId, p.user_id, JSON.stringify(deck), idx);
+    });
+
+    const response = {
+      battle_id: battleId,
+      player_count: playerCount,
+      players: unique.map(function(p) { return { user_id: p.user_id, username: p.username }; })
+    };
+    console.log('[multiplayer-battle] Event ' + req.params.id + ': ' + playerCount + ' players, battle ' + battleId);
+    wsBroadcast('event:' + req.params.id, 'multiplayer_battle_created', response);
+    res.json(response);
+  } catch (err) {
+    console.error('[multiplayer-battle] error:', err);
     res.status(500).json({ error: err.message });
   }
 });
