@@ -612,6 +612,58 @@ ensureColumn('battles', 'deck_type', "deck_type TEXT DEFAULT 'normal'");
 ensureColumn('battles', 'format_type', "format_type TEXT DEFAULT 'normal'");
 ensureColumn('battles', 'player_count', "player_count INTEGER DEFAULT 2");
 ensureColumn('decks', 'outside_game', "outside_game TEXT DEFAULT '[]'");
+
+// Ensure battle_players table exists (for existing databases)
+try {
+  db.exec(`CREATE TABLE IF NOT EXISTS battle_players (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    battle_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    deck TEXT DEFAULT '{}',
+    position INTEGER NOT NULL DEFAULT 0,
+    life INTEGER DEFAULT 20,
+    is_eliminated INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (battle_id) REFERENCES battles(id),
+    FOREIGN KEY (user_id) REFERENCES users(id),
+    UNIQUE(battle_id, user_id)
+  )`);
+  var cols = db.prepare("PRAGMA table_info(battle_players)").all();
+  // If old schema has player_slot column, recreate table with new schema
+  var hasPlayerSlot = cols.some(function(c) { return c.name === 'player_slot'; });
+  if (hasPlayerSlot) {
+    db.exec("DROP TABLE battle_players");
+    db.exec(`CREATE TABLE battle_players (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      battle_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      deck TEXT DEFAULT '{}',
+      position INTEGER NOT NULL DEFAULT 0,
+      life INTEGER DEFAULT 20,
+      is_eliminated INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (battle_id) REFERENCES battles(id),
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      UNIQUE(battle_id, user_id)
+    )`);
+    cols = db.prepare("PRAGMA table_info(battle_players)").all();
+  }
+  var hasPosition = cols.some(function(c) { return c.name === 'position'; });
+  if (!hasPosition) {
+    db.exec("ALTER TABLE battle_players ADD COLUMN position INTEGER NOT NULL DEFAULT 0");
+  }
+  var hasLife = cols.some(function(c) { return c.name === 'life'; });
+  if (!hasLife) {
+    db.exec("ALTER TABLE battle_players ADD COLUMN life INTEGER DEFAULT 20");
+  }
+  var hasEliminated = cols.some(function(c) { return c.name === 'is_eliminated'; });
+  if (!hasEliminated) {
+    db.exec("ALTER TABLE battle_players ADD COLUMN is_eliminated INTEGER DEFAULT 0");
+  }
+} catch (e) {
+  console.error('Failed to create/migrate battle_players table:', e.message);
+}
+
 ensureColumn('users', 'role', "role TEXT DEFAULT 'user'");
 ensureColumn('steps', 'parent_id', "parent_id INTEGER DEFAULT NULL");
 ensureColumn('projects', 'sort_order', "sort_order INTEGER DEFAULT 0");
@@ -2542,11 +2594,21 @@ app.post('/api/battles', authMiddleware, (req, res) => {
       name || `${req.user.username}的对战`, req.user.id, JSON.stringify(deckData), event_id || null,
       bType, dType, fType, pCount
     );
+    const battleId = result.lastInsertRowid;
+    db.prepare('INSERT INTO battle_players (battle_id, user_id, deck, position) VALUES (?, ?, ?, 0)').run(
+      battleId, req.user.id, JSON.stringify(deckData)
+    );
     const battle = db.prepare(`
       SELECT b.*, u1.username as player1_name FROM battles b
       LEFT JOIN users u1 ON b.player1_id = u1.id WHERE b.id = ?
-    `).get(result.lastInsertRowid);
+    `).get(battleId);
     battle.player1_deck = JSON.parse(battle.player1_deck);
+    battle.players = db.prepare(`
+      SELECT bp.*, u.username FROM battle_players bp
+      LEFT JOIN users u ON bp.user_id = u.id
+      WHERE bp.battle_id = ? ORDER BY bp.position
+    `).all(battleId);
+    battle.players.forEach(p => { p.deck = JSON.parse(p.deck || '{}'); });
     res.json(battle);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2565,6 +2627,12 @@ app.get('/api/battles/:id', authMiddleware, (req, res) => {
   battle.player1_deck = JSON.parse(battle.player1_deck || '{}');
   battle.player2_deck = JSON.parse(battle.player2_deck || '{}');
   battle.game_state = JSON.parse(battle.game_state || '{}');
+  battle.players = db.prepare(`
+    SELECT bp.*, u.username FROM battle_players bp
+    LEFT JOIN users u ON bp.user_id = u.id
+    WHERE bp.battle_id = ? ORDER BY bp.position
+  `).all(battle.id);
+  battle.players.forEach(p => { p.deck = JSON.parse(p.deck || '{}'); });
   res.json(battle);
 });
 
@@ -2575,31 +2643,47 @@ app.post('/api/battles/:id/join', authMiddleware, (req, res) => {
     if (!battle) return res.status(404).json({ error: '对战不存在' });
     if (battle.status !== 'waiting') return res.status(400).json({ error: '对战已开始' });
     if (battle.player1_id === req.user.id) return res.status(400).json({ error: '不能加入自己的对战' });
-    if (battle.player2_id) return res.status(400).json({ error: '对战已满' });
+
+    const isMultiplayer = battle.battle_type === 'multiplayer';
     const deck = isAdmin(req)
       ? db.prepare('SELECT * FROM decks WHERE id = ?').get(deck_id)
       : db.prepare('SELECT * FROM decks WHERE id = ? AND user_id = ?').get(deck_id, req.user.id);
     if (!deck) return res.status(404).json({ error: '牌组不存在' });
-    var isLimited = !!deck.event_id;
-    var deckType = getDeckType(deck);
-    var bDeckType = battle.deck_type || 'normal';
-    var bFormatType = battle.format_type || 'normal';
-    if (bDeckType === 'commander' && deckType !== 'commander') return res.status(400).json({ error: '该对战要求指挥官牌组' });
-    if (bDeckType === 'normal' && deckType !== 'normal') return res.status(400).json({ error: '该对战要求普通牌组' });
-    if (bFormatType === 'limited' && !isLimited) return res.status(400).json({ error: '该对战要求限制赛牌组' });
-    if (bFormatType === 'normal' && isLimited) return res.status(400).json({ error: '该对战要求非限制赛牌组' });
     const deckData = {
       name: deck.name, main_deck: JSON.parse(deck.main_deck), sideboard: JSON.parse(deck.sideboard),
       outside_game: JSON.parse(deck.outside_game || '[]')
     };
-    db.prepare('UPDATE battles SET player2_id = ?, player2_deck = ? WHERE id = ?').run(
-      req.user.id, JSON.stringify(deckData), battle.id
-    );
+
+    if (isMultiplayer) {
+      var existingPlayers = db.prepare('SELECT COUNT(*) as cnt FROM battle_players WHERE battle_id = ?').get(battle.id);
+      if (existingPlayers.cnt >= (battle.player_count || 2)) return res.status(400).json({ error: '对战已满' });
+      var alreadyJoined = db.prepare('SELECT id FROM battle_players WHERE battle_id = ? AND user_id = ?').get(battle.id, req.user.id);
+      if (alreadyJoined) return res.status(400).json({ error: '你已加入此对战' });
+      var nextPos = existingPlayers.cnt;
+      db.prepare('INSERT INTO battle_players (battle_id, user_id, deck, position) VALUES (?, ?, ?, ?)').run(
+        battle.id, req.user.id, JSON.stringify(deckData), nextPos
+      );
+    } else {
+      if (battle.player2_id) return res.status(400).json({ error: '对战已满' });
+      db.prepare('UPDATE battles SET player2_id = ?, player2_deck = ? WHERE id = ?').run(
+        req.user.id, JSON.stringify(deckData), battle.id
+      );
+      db.prepare('INSERT INTO battle_players (battle_id, user_id, deck, position) VALUES (?, ?, ?, 1)').run(
+        battle.id, req.user.id, JSON.stringify(deckData)
+      );
+    }
+
     const updated = db.prepare(`
       SELECT b.*, u1.username as player1_name, u2.username as player2_name
       FROM battles b LEFT JOIN users u1 ON b.player1_id = u1.id LEFT JOIN users u2 ON b.player2_id = u2.id
       WHERE b.id = ?
     `).get(battle.id);
+    updated.players = db.prepare(`
+      SELECT bp.*, u.username FROM battle_players bp
+      LEFT JOIN users u ON bp.user_id = u.id
+      WHERE bp.battle_id = ? ORDER BY bp.position
+    `).all(battle.id);
+    updated.players.forEach(p => { p.deck = JSON.parse(p.deck || '{}'); });
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2616,10 +2700,27 @@ app.post('/api/battles/:id/start', authMiddleware, (req, res) => {
     `).get(req.params.id);
     if (!battle) return res.status(404).json({ error: '对战不存在' });
     if (battle.status !== 'waiting') return res.status(400).json({ error: '对战已开始' });
-    if (!battle.player2_id) return res.status(400).json({ error: '等待对手加入' });
-    battle.player1_deck = JSON.parse(battle.player1_deck || '{}');
-    battle.player2_deck = JSON.parse(battle.player2_deck || '{}');
-    const gs = initializeGameState(battle);
+
+    const isMultiplayer = battle.battle_type === 'multiplayer';
+    var gs;
+
+    if (isMultiplayer) {
+      var players = db.prepare(`
+        SELECT bp.*, u.username FROM battle_players bp
+        LEFT JOIN users u ON bp.user_id = u.id
+        WHERE bp.battle_id = ? ORDER BY bp.position
+      `).all(battle.id);
+      players.forEach(p => { p.deck = JSON.parse(p.deck || '{}'); });
+      var required = battle.player_count || 2;
+      if (players.length < required) return res.status(400).json({ error: '人数不足，需要 ' + required + ' 人才能开始，当前 ' + players.length + ' 人' });
+      gs = initializeGameStateMultiplayer(battle, players);
+    } else {
+      if (!battle.player2_id) return res.status(400).json({ error: '等待对手加入' });
+      battle.player1_deck = JSON.parse(battle.player1_deck || '{}');
+      battle.player2_deck = JSON.parse(battle.player2_deck || '{}');
+      gs = initializeGameState(battle);
+    }
+
     db.prepare('UPDATE battles SET status = ?, game_state = ?, current_turn = 1, current_game = 1 WHERE id = ?').run(
       'in_progress', JSON.stringify(gs), battle.id
     );
@@ -2896,6 +2997,47 @@ function initializeGameState(battle) {
   return gs;
 }
 
+function initializeGameStateMultiplayer(battle, players) {
+  var playerKeys = [];
+  var playersObj = {};
+  var flippedCards = {};
+  for (var i = 0; i < players.length; i++) {
+    var key = 'p' + (i + 1);
+    playerKeys.push(key);
+    var p = players[i];
+    var deckList = Array.isArray(p.deck.main_deck) ? p.deck.main_deck : [];
+    var outsideList = Array.isArray(p.deck.outside_game) ? p.deck.outside_game : [];
+    var lib = shuffleArray(resolveDeck(deckList));
+    var hand = lib.splice(0, 7);
+    var outside = resolveDeck(outsideList);
+    playersObj[key] = {
+      userId: p.user_id, name: p.username,
+      life: 20, library: lib, hand: hand,
+      battlefield: [], graveyard: [], exile: [], outside_game: outside
+    };
+    flippedCards[key] = [];
+  }
+  var firstIdx = Math.floor(Math.random() * playerKeys.length);
+  var firstPlayer = playerKeys[firstIdx];
+  var firstPlayerName = playersObj[firstPlayer].name;
+  var log = [
+    '多人对战开始！(' + players.length + '人)',
+    firstPlayerName + ' 先手',
+    '--- 第1回合: ' + firstPlayerName + ' ---'
+  ];
+  return {
+    turn: 1,
+    activePlayer: firstPlayer,
+    players: playersObj,
+    playerOrder: playerKeys,
+    log: log,
+    flipped_cards: flippedCards,
+    winner: null,
+    startedAt: Date.now(),
+    isMultiplayer: true
+  };
+}
+
 function findCardInZone(player, cardId, zone) {
   return player[zone].findIndex(c => c.id === cardId);
 }
@@ -2924,9 +3066,20 @@ function detachStackedCardsToBattlefield(player, card, gs) {
 
 function processGameAction(gs, userId, action) {
   let myKey, oppKey;
-  if (gs.players.p1.userId === userId) { myKey = 'p1'; oppKey = 'p2'; }
-  else if (gs.players.p2.userId === userId) { myKey = 'p2'; oppKey = 'p1'; }
-  else throw new Error('你不是此对战的玩家');
+  // Find myKey dynamically from all players
+  for (const key of Object.keys(gs.players)) {
+    if (gs.players[key].userId === userId) { myKey = key; break; }
+  }
+  if (!myKey) throw new Error('你不是此对战的玩家');
+  // For backward compatibility: oppKey is the first other player (or specified target)
+  if (action.target_player && gs.players[action.target_player]) {
+    oppKey = action.target_player;
+  } else {
+    // Default opponent: first player that is not me
+    for (const key of Object.keys(gs.players)) {
+      if (key !== myKey) { oppKey = key; break; }
+    }
+  }
   const me = gs.players[myKey];
   const opp = gs.players[oppKey];
 
@@ -3050,7 +3203,12 @@ function processGameAction(gs, userId, action) {
     case 'adjust_life': {
       const { amount } = action;
       if (typeof amount !== 'number') return { error: '无效的数值' };
-      const target = action.target === 'opponent' ? opp : me;
+      let target;
+      if (action.target_player && gs.players[action.target_player]) {
+        target = gs.players[action.target_player];
+      } else {
+        target = action.target === 'opponent' ? opp : me;
+      }
       target.life += amount;
       gs.log.push(target.name + ' 生命' + (amount >= 0 ? '+' : '') + amount + ' (' + target.life + ')');
       return { success: true };
@@ -3167,8 +3325,20 @@ function processGameAction(gs, userId, action) {
       return { success: true };
     }
     case 'concede': {
-      gs.winner = oppKey;
-      gs.log.push(me.name + ' 认输');
+      if (gs.isMultiplayer) {
+        me.life = 0;
+        me.isEliminated = true;
+        gs.log.push(me.name + ' 认输，被淘汰');
+        // Check if only one player remains
+        var remaining = Object.keys(gs.players).filter(k => !gs.players[k].isEliminated);
+        if (remaining.length === 1) {
+          gs.winner = remaining[0];
+          gs.log.push(gs.players[remaining[0]].name + ' 获得胜利！');
+        }
+      } else {
+        gs.winner = oppKey;
+        gs.log.push(me.name + ' 认输');
+      }
       return { success: true };
     }
     case 'return_to_library': {
@@ -3445,6 +3615,15 @@ app.post('/api/battles/:id/action', authMiddleware, (req, res) => {
     if (result.error) return res.status(400).json(result);
 
     if (gs.winner) {
+      if (gs.isMultiplayer) {
+        // Multiplayer: game over, find winner's user_id
+        var winnerUserId = gs.players[gs.winner].userId;
+        db.prepare('UPDATE battles SET winner_id = ?, status = ? WHERE id = ?').run(
+          winnerUserId, 'completed', battle.id
+        );
+        gs.matchOver = true;
+        gs.matchWinner = gs.winner;
+      } else {
       // Determine format from event settings (BO1 or BO3)
       let matchFormat = 'bo3'; // default
       if (battle.event_id) {
@@ -3474,6 +3653,7 @@ app.post('/api/battles/:id/action', authMiddleware, (req, res) => {
         gs.gameWinner = gs.winner;
         gs.player1_wins = p1w;
         gs.player2_wins = p2w;
+      }
       }
     }
 

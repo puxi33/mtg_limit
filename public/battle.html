@@ -976,8 +976,37 @@
         }
 
         // Determine player keys
-        state.myKey = String(battle.player1_id) === String(state.user.id) ? 'p1' : 'p2';
-        state.oppKey = state.myKey === 'p1' ? 'p2' : 'p1';
+        var gs = battle.game_state || {};
+        var isMultiplayer = gs.isMultiplayer || battle.battle_type === 'multiplayer';
+        if (isMultiplayer && gs.players) {
+          // Find myKey from game state players
+          state.myKey = null;
+          for (var key of Object.keys(gs.players)) {
+            if (String(gs.players[key].userId) === String(state.user.id)) {
+              state.myKey = key;
+              break;
+            }
+          }
+          if (!state.myKey) {
+            // Fallback: find from battle.players
+            var bp = battle.players || [];
+            for (var i = 0; i < bp.length; i++) {
+              if (String(bp[i].user_id) === String(state.user.id)) {
+                state.myKey = 'p' + (i + 1);
+                break;
+              }
+            }
+          }
+          // Store all player keys for tab switching
+          state.allPlayerKeys = Object.keys(gs.players);
+          // Default opponent: first other player
+          state.oppKey = state.allPlayerKeys.find(k => k !== state.myKey) || 'p2';
+        } else {
+          state.myKey = String(battle.player1_id) === String(state.user.id) ? 'p1' : 'p2';
+          state.oppKey = state.myKey === 'p1' ? 'p2' : 'p1';
+          state.allPlayerKeys = ['p1', 'p2'];
+        }
+        state.isMultiplayer = isMultiplayer;
         battleLocalUI.myKey = state.myKey;
         battleLocalUI.oppKey = state.oppKey;
 
@@ -1012,11 +1041,42 @@
     function renderWaitingScreen(battle) {
       const root = document.getElementById('battle-root');
       const isOwner = String(battle.player1_id) === String(state.user.id);
-      const hasP2 = !!battle.player2_id;
-      var battleTypeLabel = battle.battle_type === 'multiplayer' ? '多人对战' : '1v1 对战';
+      const isMultiplayer = battle.battle_type === 'multiplayer';
+      const players = battle.players || [];
+      const requiredCount = isMultiplayer ? (battle.player_count || 3) : 2;
+      const currentCount = players.length;
+      const isFull = currentCount >= requiredCount;
+      const myUserId = String(state.user.id);
+      const hasJoined = players.some(p => String(p.user_id) === myUserId);
+      const canStart = isOwner && isFull && battle.status === 'waiting';
+      const canJoin = !hasJoined && !isFull && battle.status === 'waiting';
+
+      var battleTypeLabel = isMultiplayer ? '多人对战' : '1v1 对战';
       var deckTypeLabel = battle.deck_type === 'commander' ? '指挥官牌组' : '普通牌组';
       var formatTypeLabel = battle.format_type === 'limited' ? '限制赛' : '普通';
-      var playerCountInfo = battle.battle_type === 'multiplayer' && battle.player_count ? ' · ' + battle.player_count + '人' : '';
+      var playerCountInfo = isMultiplayer ? ' · ' + currentCount + '/' + requiredCount + '人' : '';
+
+      var playersHtml = players.map(function(p, i) {
+        return '<div style="display:flex;align-items:center;gap:8px;padding:6px 12px;background:rgba(255,255,255,0.05);border-radius:8px">' +
+          '<span style="font-weight:600;color:var(--accent)">P' + (i + 1) + '</span>' +
+          '<span>' + escapeHtml(p.username || '玩家' + (i + 1)) + '</span>' +
+          (i === 0 ? '<span style="font-size:0.7rem;color:var(--text-muted)">(创建者)</span>' : '') +
+        '</div>';
+      }).join('');
+
+      var waitingSlots = '';
+      if (isMultiplayer) {
+        for (var i = currentCount; i < requiredCount; i++) {
+          waitingSlots += '<div style="display:flex;align-items:center;gap:8px;padding:6px 12px;border:1px dashed rgba(255,255,255,0.15);border-radius:8px;color:var(--text-muted)">' +
+            '<span style="font-weight:600">P' + (i + 1) + '</span>' +
+            '<span>等待加入...</span>' +
+          '</div>';
+        }
+      } else {
+        if (!players[1]) {
+          waitingSlots = '<div style="color:var(--text-muted)">等待对手加入...</div>';
+        }
+      }
 
       root.innerHTML = `
         <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:16px">
@@ -1026,10 +1086,14 @@
             <span class="deck-tag" style="background:rgba(212,175,55,0.15);color:#d4af37;border:1px solid rgba(212,175,55,0.3)">${deckTypeLabel}</span>
             <span class="deck-tag" style="background:rgba(122,130,153,0.15);color:#8a8a9a;border:1px solid rgba(122,130,153,0.3)">${formatTypeLabel}</span>
           </div>
-          <div>创建者: ${escapeHtml(battle.player1_name || '玩家1')}</div>
-          ${hasP2 ? `<div>对手: ${escapeHtml(battle.player2_name || '玩家2')}</div>` : '<div style="color:var(--text-muted)">等待对手加入...</div>'}
-          ${!hasP2 && !isOwner ? `<button class="btn btn-primary" onclick="joinThisBattle()">加入对战</button>` : ''}
-          ${hasP2 && isOwner && battle.status === 'waiting' ? `<button class="btn btn-primary" onclick="startThisBattle()">开始对战</button>` : ''}
+          <div style="display:flex;flex-direction:column;gap:8px;min-width:240px">
+            ${playersHtml}
+            ${waitingSlots}
+          </div>
+          ${canJoin ? `<button class="btn btn-primary" onclick="joinThisBattle()">加入对战</button>` : ''}
+          ${canStart ? `<button class="btn btn-warning" onclick="startThisBattle()">开始对战</button>` : ''}
+          ${isOwner && !isFull && isMultiplayer ? '<div style="color:var(--text-muted);font-size:0.85rem">需要 ' + requiredCount + ' 人才能开始，当前 ' + currentCount + ' 人</div>' : ''}
+          ${!isOwner && !canJoin && battle.status === 'waiting' ? '<p class="text-muted">等待房主开始对战...</p>' : ''}
           <button class="btn btn-secondary" onclick="window.close()">返回</button>
         </div>
       `;

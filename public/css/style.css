@@ -631,6 +631,58 @@ textarea {
 }
 
 /* ============================================================
+   Multiplayer Board Layout
+   ============================================================ */
+.mp-board-wrapper {
+  display: flex;
+  height: 100%;
+  gap: 0;
+}
+.mp-board-wrapper .mtga-board {
+  flex: 1;
+  min-width: 0;
+}
+.mp-sidebar {
+  width: 180px;
+  min-width: 180px;
+  background: var(--bg-secondary, #1a1a2e);
+  border-left: 1px solid rgba(255,255,255,0.08);
+  padding: 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+}
+.mp-sidebar-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted, #8a8a9a);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 4px 8px 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  margin-bottom: 4px;
+}
+.mp-player-tab {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.03);
+  cursor: pointer;
+  transition: all 0.15s;
+  border: 1px solid transparent;
+}
+.mp-player-tab:hover {
+  background: rgba(255,255,255,0.06);
+}
+.mp-player-tab.active {
+  background: rgba(78,168,222,0.12);
+  border-color: rgba(78,168,222,0.3);
+}
+.mp-player-tab.eliminated {
+  opacity: 0.5;
+}
+
+/* ============================================================
    Dashboard Stats
    ============================================================ */
 .dashboard-stats {

@@ -4331,8 +4331,19 @@ if (typeof WS === 'undefined') {
       const battle = await api('/api/battles/' + battleId);
       if (battle.status === 'completed') { renderBattleCompleted(el, battle, battleId); return; }
       if (!battle.game_state || !battle.game_state.players) { renderBattleLobby(el, battle, battleId); return; }
-      const myKey = String(battle.player1_id) === String(state.user?.id) ? 'p1' : 'p2';
-      const oppKey = myKey === 'p1' ? 'p2' : 'p1';
+      var gs = battle.game_state;
+      var myKey = state.myKey;
+      if (!myKey) {
+        for (var k of Object.keys(gs.players)) {
+          if (String(gs.players[k].userId) === String(state.user?.id)) { myKey = k; break; }
+        }
+      }
+      if (!myKey) myKey = String(battle.player1_id) === String(state.user?.id) ? 'p1' : 'p2';
+      var oppKey = state.oppKey || (Object.keys(gs.players).find(function(k) { return k !== myKey; }) || 'p2');
+      state.myKey = myKey;
+      state.oppKey = oppKey;
+      state.allPlayerKeys = Object.keys(gs.players);
+      state.isMultiplayer = gs.isMultiplayer || battle.battle_type === 'multiplayer';
       renderBattleBoard(el, battle, battleId, myKey, oppKey);
     } catch (err) { console.error('Battle WS refresh error:', err); }
   });
@@ -4581,29 +4592,65 @@ async function startBattle(id) {
 }
 
 function renderBattleLobby(el, battle, id) {
-  const isP1 = String(battle.player1_id) === String(state.user?.id);
-  const canJoin = !isP1 && battle.player2_id == null && state.user?.id != null;
-  const canStart = isP1 && battle.player2_id != null;
-  var battleTypeLabel = battle.battle_type === 'multiplayer' ? '多人对战' : '1v1 对战';
+  const isMultiplayer = battle.battle_type === 'multiplayer';
+  const players = battle.players || [];
+  const myUserId = String(state.user?.id);
+  const isOwner = String(battle.player1_id) === String(state.user?.id);
+  const hasJoined = players.some(function(p) { return String(p.user_id) === myUserId; });
+  const requiredCount = isMultiplayer ? (battle.player_count || 3) : 2;
+  const currentCount = players.length;
+  const isFull = currentCount >= requiredCount;
+  const canJoin = !hasJoined && !isFull && state.user?.id != null && battle.status === 'waiting';
+  const canStart = isOwner && isFull && battle.status === 'waiting';
+
+  var battleTypeLabel = isMultiplayer ? '多人对战' : '1v1 对战';
   var deckTypeLabel = battle.deck_type === 'commander' ? '指挥官牌组' : '普通牌组';
   var formatTypeLabel = battle.format_type === 'limited' ? '限制赛' : '普通';
-  var playerCountInfo = battle.battle_type === 'multiplayer' && battle.player_count ? ' · ' + battle.player_count + '人' : '';
+  var playerCountInfo = isMultiplayer ? ' · ' + currentCount + '/' + requiredCount + '人' : '';
+
+  var playersHtml = '';
+  if (isMultiplayer) {
+    playersHtml = players.map(function(p, i) {
+      return '<div style="display:flex;align-items:center;gap:8px;padding:8px 14px;background:rgba(255,255,255,0.05);border-radius:8px">' +
+        '<span style="font-weight:600;color:var(--accent)">P' + (i + 1) + '</span>' +
+        '<span>' + escapeHtml(p.username || '玩家' + (i + 1)) + '</span>' +
+        (i === 0 ? '<span style="font-size:0.7rem;color:var(--text-muted)">(创建者)</span>' : '') +
+      '</div>';
+    }).join('');
+    for (var i = currentCount; i < requiredCount; i++) {
+      playersHtml += '<div style="display:flex;align-items:center;gap:8px;padding:8px 14px;border:1px dashed rgba(255,255,255,0.15);border-radius:8px;color:var(--text-muted)">' +
+        '<span style="font-weight:600">P' + (i + 1) + '</span>' +
+        '<span>等待加入...</span>' +
+      '</div>';
+    }
+  }
+
+  var statusText = isMultiplayer
+    ? (isFull ? '所有玩家已就位' : '等待玩家加入 (' + currentCount + '/' + requiredCount + ')')
+    : (battle.player2_id ? '双方已就位' : '等待对手加入');
+  var vsText = isMultiplayer
+    ? players.map(function(p) { return escapeHtml(p.username || '玩家'); }).join(' vs ') || '---'
+    : (escapeHtml(battle.player1_name || '玩家1') + ' vs ' + (battle.player2_id ? escapeHtml(battle.player2_name || '玩家2') : '???'));
+
   el.innerHTML = `
     <div class="page-header">
       <button class="btn btn-secondary btn-sm" onclick="navigate('battles')">← 返回</button>
       <h2 style="display:inline;margin-left:12px">${escapeHtml(battle.name || ('对战 #' + id))}</h2>
     </div>
     <div class="empty-state">
-      <h3>${battle.player2_id ? '双方已就位' : '等待对手加入'}</h3>
-      <p>${escapeHtml(battle.player1_name || '玩家1')} vs ${battle.player2_id ? escapeHtml(battle.player2_name || '玩家2') : '???'}</p>
+      <h3>${statusText}</h3>
+      <p>${vsText}</p>
       <div style="margin-top:12px;display:flex;gap:6px;justify-content:center;flex-wrap:wrap">
         <span class="deck-tag" style="background:rgba(78,168,222,0.15);color:#4ea8de;border:1px solid rgba(78,168,222,0.3)">${battleTypeLabel}${playerCountInfo}</span>
         <span class="deck-tag" style="background:rgba(212,175,55,0.15);color:#d4af37;border:1px solid rgba(212,175,55,0.3)">${deckTypeLabel}</span>
         <span class="deck-tag" style="background:rgba(122,130,153,0.15);color:#8a8a9a;border:1px solid rgba(122,130,153,0.3)">${formatTypeLabel}</span>
       </div>
+      ${isMultiplayer ? '<div style="margin-top:16px;display:flex;flex-direction:column;gap:8px;align-items:center">' + playersHtml + '</div>' : ''}
       ${canJoin ? `<button class="btn btn-success" style="margin-top:16px" onclick="joinBattle(${id})">加入对战</button>` : ''}
       ${canStart ? `<button class="btn btn-warning" style="margin-top:16px" onclick="startBattle(${id})">开始对战</button>` : ''}
-      ${!canJoin && !canStart ? '<p class="text-muted" style="margin-top:12px">等待其他玩家操作...</p>' : ''}
+      ${isOwner && !isFull && isMultiplayer ? '<p class="text-muted" style="margin-top:12px">需要 ' + requiredCount + ' 人才能开始，当前 ' + currentCount + ' 人</p>' : ''}
+      ${!canJoin && !canStart && !isMultiplayer ? '<p class="text-muted" style="margin-top:12px">等待其他玩家操作...</p>' : ''}
+      ${!isOwner && !canJoin && battle.status === 'waiting' && isMultiplayer ? '<p class="text-muted" style="margin-top:12px">等待房主开始对战...</p>' : ''}
     </div>
   `;
 }
@@ -5950,11 +5997,24 @@ document.addEventListener('click', function(e) {
   }
 });
 
+function switchBattleOpponent(battleId, newOppKey) {
+  state.oppKey = newOppKey;
+  battleLocalUI.oppKey = newOppKey;
+  // Re-render the board with the new opponent
+  var contentEl = document.getElementById('content');
+  if (contentEl && battleLocalUI.gs) {
+    var battle = { game_state: battleLocalUI.gs };
+    renderBattleBoard(contentEl, battle, battleId, state.myKey, newOppKey);
+  }
+}
+
 function renderBattleBoard(el, battle, battleId, myKey, oppKey) {
   var gs = battle.game_state;
   var me = gs.players[myKey];
   var opp = gs.players[oppKey];
   var isMyTurn = gs.activePlayer === myKey;
+  var isMultiplayer = gs.isMultiplayer || state.isMultiplayer;
+  var allPlayerKeys = state.allPlayerKeys || Object.keys(gs.players);
 
   // Clean up any existing reveal overlay from previous render
   var oldReveal = document.getElementById('opp-reveal-overlay');
@@ -5971,11 +6031,8 @@ function renderBattleBoard(el, battle, battleId, myKey, oppKey) {
   var winBanner = '';
   if (gs.winner) {
     if (gs.matchOver) {
-      var p1w = gs.player1_wins || battle.player1_wins || 0;
-      var p2w = gs.player2_wins || battle.player2_wins || 0;
       winBanner = '<div class="mtga-win-banner">' +
-        (gs.matchWinner === myKey ? '\ud83c\udfc6 Match Win!' : '\ud83d\udc80 Match Loss') +
-        '<div style="font-size:0.9rem;margin-top:8px;opacity:0.8">' + p1w + ' - ' + p2w + '</div>' +
+        (gs.matchWinner === myKey ? '\ud83c\udfc6 Match Win!' : '\ud83d\udc80 ' + (isMultiplayer ? 'You were eliminated' : 'Match Loss')) +
         '<button class="btn btn-primary" style="margin-top:12px" onclick="mtgaReturnToEvent(' + battleId + ')">\u2190 返回比赛</button>' +
         '</div>';
     } else {
@@ -5984,7 +6041,6 @@ function renderBattleBoard(el, battle, battleId, myKey, oppKey) {
       var gameNum = battle.current_game || 1;
       winBanner = '<div class="mtga-win-banner">' +
         (gs.winner === myKey ? '\ud83c\udf89 Game Win!' : '\ud83d\udc80 Game Loss') +
-        '<div style="font-size:0.9rem;margin-top:8px;opacity:0.8">Score: ' + p1w + ' - ' + p2w + ' (Game ' + gameNum + ')</div>' +
         '<div style="display:flex;gap:8px;justify-content:center;margin-top:12px">' +
         '<button class="btn btn-primary" onclick="mtgaNextGame(' + battleId + ')">下一局 \u25b6</button>' +
         '<button class="btn btn-secondary" onclick="mtgaReturnToEvent(' + battleId + ')">\u2190 返回比赛</button>' +
@@ -5992,11 +6048,40 @@ function renderBattleBoard(el, battle, battleId, myKey, oppKey) {
     }
   }
 
-  el.innerHTML =
+  // Build multiplayer sidebar
+  var sidebarHtml = '';
+  if (isMultiplayer) {
+    var otherPlayers = allPlayerKeys.filter(function(k) { return k !== myKey; });
+    sidebarHtml = '<div class="mp-sidebar" id="mp-sidebar">' +
+      '<div class="mp-sidebar-title">玩家列表</div>';
+    otherPlayers.forEach(function(pk) {
+      var p = gs.players[pk];
+      if (!p) return;
+      var isActive = pk === oppKey;
+      var isEliminated = p.isEliminated || (p.life <= 0);
+      var isTurn = gs.activePlayer === pk;
+      sidebarHtml += '<div class="mp-player-tab' + (isActive ? ' active' : '') + (isEliminated ? ' eliminated' : '') + '"' +
+        ' onclick="switchBattleOpponent(\'' + battleId + '\',\'' + pk + '\')"' +
+        ' style="' + (isTurn ? 'border-left:3px solid var(--accent);' : '') + '">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center">' +
+          '<span style="font-weight:600;font-size:0.85rem' + (isEliminated ? ';opacity:0.4;text-decoration:line-through' : '') + '">' + escapeHtml(p.name || pk) + '</span>' +
+          (isTurn ? '<span style="font-size:0.65rem;color:var(--accent)">回合中</span>' : '') +
+        '</div>' +
+        '<div style="display:flex;gap:8px;margin-top:4px;font-size:0.75rem;color:var(--text-muted)">' +
+          '<span style="color:' + ((p.life || 0) <= 5 ? '#e74c3c' : 'inherit') + '">\u2764 ' + (p.life || 0) + '</span>' +
+          '<span>\u270b ' + (p.hand || []).length + '</span>' +
+          '<span>\ud83d\udcda ' + (p.library || []).length + '</span>' +
+        '</div>' +
+      '</div>';
+    });
+    sidebarHtml += '</div>';
+  }
+
+  var boardHtml =
     '<div class="mtga-board" id="mtga-board">' +
       '<!-- Opponent info -->' +
       '<div class="mtga-info-bar">' +
-        '<div class="mtga-player-name">' + escapeHtml(opp?.name || 'Opponent') + '</div>' +
+        '<div class="mtga-player-name">' + escapeHtml(opp?.name || 'Opponent') + (isMultiplayer ? ' <span style="font-size:0.7rem;color:var(--text-muted)">(查看中)</span>' : '') + '</div>' +
         '<div class="mtga-life-group">' +
           '<button class="life-btn life-btn-minus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',-5)" title="-5">-5</button>' +
           '<button class="life-btn life-btn-minus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',-2)" title="-2">-2</button>' +
@@ -6056,9 +6141,13 @@ function renderBattleBoard(el, battle, battleId, myKey, oppKey) {
         '<div class="mtga-zone-label" style="top:6px;left:14px">My Hand \xb7 ' + (me?.hand || []).length + '</div>' +
         '<div class="mtga-hand-inner">' + renderHandCards(me?.hand || []) + '</div>' +
       '</div>' +
-    '</div>' +
-    winBanner +
-    renderActionBar(battleId, gs, myKey, battle);
+    '</div>';
+
+  if (isMultiplayer) {
+    el.innerHTML = '<div class="mp-board-wrapper">' + boardHtml + sidebarHtml + '</div>' + winBanner + renderActionBar(battleId, gs, myKey, battle);
+  } else {
+    el.innerHTML = boardHtml + winBanner + renderActionBar(battleId, gs, myKey, battle);
+  }
 
   // Render revealed cards (if opponent is showing cards to us)
   var revealed = gs.revealed_cards || {};
@@ -6709,7 +6798,11 @@ function mtgaRenderBoard(battleId, battle) {
 }
 
 function mtgaQuickLife(battleId, target, amount) {
-  mtgaAction(battleId, { type: 'adjust_life', amount: amount, target: target });
+  var action = { type: 'adjust_life', amount: amount, target: target };
+  if (target === 'opponent' && state.isMultiplayer && state.oppKey) {
+    action.target_player = state.oppKey;
+  }
+  mtgaAction(battleId, action);
 }
 
 function mtgaAdjustLife(battleId, target, currentLife) {
@@ -6717,7 +6810,11 @@ function mtgaAdjustLife(battleId, target, currentLife) {
   if (amount === null) return;
   var n = parseInt(amount);
   if (isNaN(n) || n === 0) return;
-  mtgaAction(battleId, { type: 'adjust_life', amount: n, target: target });
+  var action = { type: 'adjust_life', amount: n, target: target };
+  if (target === 'opponent' && state.isMultiplayer && state.oppKey) {
+    action.target_player = state.oppKey;
+  }
+  mtgaAction(battleId, action);
 }
 
 function mtgaLoyaltyAdjust(cardId, amount) {
@@ -6730,8 +6827,8 @@ function mtgaRefreshBoard(battleId) {
   var el = document.getElementById('content');
   if (!el) return;
   api('/api/battles/' + battleId).then(function(battle) {
-    var myKey = String(battle.player1_id) === String(state.user?.id) ? 'p1' : 'p2';
-    var oppKey = myKey === 'p1' ? 'p2' : 'p1';
+    var myKey = state.myKey || (String(battle.player1_id) === String(state.user?.id) ? 'p1' : 'p2');
+    var oppKey = state.oppKey || (myKey === 'p1' ? 'p2' : 'p1');
     battleLocalUI.myKey = myKey;
     battleLocalUI.oppKey = oppKey;
     renderBattleBoard(el, battle, battleId, myKey, oppKey);
