@@ -40,15 +40,6 @@ function renderCardInnerHtml(card, isFlipped) {
     '</div>';
 }
 
-function renderManaCost(cost) {
-  if (!cost) return '';
-  return cost.replace(/\{([^}]+)\}/g, function(match, sym) {
-    const colors = { W: 'white-mana', U: 'blue-mana', B: '#666', R: 'red-mana', G: 'green-mana' };
-    const color = colors[sym] || '#888';
-    return '<span style="background:' + color + ';color:white;padding:1px 5px;border-radius:50%;font-size:0.7rem;font-weight:700;display:inline-block;min-width:18px;text-align:center;">' + sym + '</span>';
-  });
-}
-
 function renderCounterBadges(card) {
   if (!card.counters || typeof card.counters !== 'object') return '';
   var keys = Object.keys(card.counters);
