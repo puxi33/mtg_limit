@@ -2281,6 +2281,7 @@ app.get('/api/battles', authMiddleware, (req, res) => {
     FROM battles b
     LEFT JOIN users u1 ON b.player1_id = u1.id
     LEFT JOIN users u2 ON b.player2_id = u2.id
+    WHERE b.status != 'completed'
     ORDER BY b.created_at DESC
   `).all();
   res.json(battles);
@@ -2703,6 +2704,19 @@ app.get('/api/battles/:id', authMiddleware, (req, res) => {
   `).all(battle.id);
   battle.players.forEach(p => { p.deck = JSON.parse(p.deck || '{}'); });
   res.json(battle);
+});
+
+app.delete('/api/battles/:id', authMiddleware, (req, res) => {
+  try {
+    const battle = db.prepare('SELECT * FROM battles WHERE id = ?').get(req.params.id);
+    if (!battle) return res.status(404).json({ error: '对战不存在' });
+    db.prepare('DELETE FROM battle_players WHERE battle_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM battles WHERE id = ?').run(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[delete-battle] error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/battles/:id/join', authMiddleware, (req, res) => {

@@ -69,7 +69,8 @@ async function renderBattles(el) {
           var formatTypeLabel = b.format_type === 'limited' ? '限制赛' : '普通';
           var playerCountLabel = b.battle_type === 'multiplayer' && b.player_count ? ' · ' + b.player_count + '人' : '';
           return `
-          <div class="card-item" onclick="navigate('battle-detail', {id:${b.id}})">
+          <div class="card-item" onclick="navigate('battle-detail', {id:${b.id}})" style="position:relative">
+            <button class="btn btn-sm card-delete-btn" onclick="event.stopPropagation();deleteBattle(${b.id})" title="删除对战">&times;</button>
             <h3>${b.name || '对战 #' + b.id}</h3>
             <span class="badge badge-${b.status === 'waiting' ? 'waiting' : b.status === 'in_progress' ? 'progress' : 'completed'}">
               ${b.status === 'waiting' ? '等待中' : b.status === 'in_progress' ? '进行中' : '已完成'}
@@ -92,6 +93,15 @@ async function renderBattles(el) {
   } catch (err) {
     el.innerHTML = `<div class="empty-state"><h3>加载失败</h3><p>${err.message}</p></div>`;
   }
+}
+
+async function deleteBattle(id) {
+  if (!confirm('确定要删除这场对战吗？')) return;
+  try {
+    await api('/api/battles/' + id, { method: 'DELETE' });
+    showToast('对战已删除');
+    navigate('battles');
+  } catch (err) { showToast(err.message, 'error'); }
 }
 
 async function showCreateBattleModal() {
