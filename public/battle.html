@@ -1013,10 +1013,19 @@
       const root = document.getElementById('battle-root');
       const isOwner = String(battle.player1_id) === String(state.user.id);
       const hasP2 = !!battle.player2_id;
+      var battleTypeLabel = battle.battle_type === 'multiplayer' ? '多人对战' : '1v1 对战';
+      var deckTypeLabel = battle.deck_type === 'commander' ? '指挥官牌组' : '普通牌组';
+      var formatTypeLabel = battle.format_type === 'limited' ? '限制赛' : '普通';
+      var playerCountInfo = battle.battle_type === 'multiplayer' && battle.player_count ? ' · ' + battle.player_count + '人' : '';
 
       root.innerHTML = `
         <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:16px">
           <h2>${escapeHtml(battle.name || '对战 #' + battleId)}</h2>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center">
+            <span class="deck-tag" style="background:rgba(78,168,222,0.15);color:#4ea8de;border:1px solid rgba(78,168,222,0.3)">${battleTypeLabel}${playerCountInfo}</span>
+            <span class="deck-tag" style="background:rgba(212,175,55,0.15);color:#d4af37;border:1px solid rgba(212,175,55,0.3)">${deckTypeLabel}</span>
+            <span class="deck-tag" style="background:rgba(122,130,153,0.15);color:#8a8a9a;border:1px solid rgba(122,130,153,0.3)">${formatTypeLabel}</span>
+          </div>
           <div>创建者: ${escapeHtml(battle.player1_name || '玩家1')}</div>
           ${hasP2 ? `<div>对手: ${escapeHtml(battle.player2_name || '玩家2')}</div>` : '<div style="color:var(--text-muted)">等待对手加入...</div>'}
           ${!hasP2 && !isOwner ? `<button class="btn btn-primary" onclick="joinThisBattle()">加入对战</button>` : ''}
@@ -1028,14 +1037,26 @@
 
     async function joinThisBattle() {
       try {
-        const decks = await api('/api/decks');
-        if (decks.length === 0) { showToast('请先创建一个牌组', 'error'); return; }
+        const battle = await api(`/api/battles/${battleId}`);
+        const allDecks = await api('/api/decks');
+        var filtered = allDecks.filter(function(d) {
+          var isLimited = !!d.event_id;
+          var isCommander = d.type === 'commander';
+          var bDeckType = battle.deck_type || 'normal';
+          var bFormatType = battle.format_type || 'normal';
+          if (bDeckType === 'commander' && !isCommander) return false;
+          if (bDeckType === 'normal' && isCommander) return false;
+          if (bFormatType === 'limited' && !isLimited) return false;
+          if (bFormatType === 'normal' && isLimited) return false;
+          return true;
+        });
+        if (filtered.length === 0) { showToast('没有符合该对战要求的牌组', 'error'); return; }
         showModal('加入对战', `
           <form onsubmit="handleJoin(event)">
             <div class="form-group">
               <label>选择牌组</label>
               <select id="join-deck-select" required>
-                ${decks.map(d => `<option value="${d.id}">${escapeHtml(d.name)} (${Array.isArray(d.main_deck) ? d.main_deck.length : 0}张)</option>`).join('')}
+                ${filtered.map(d => `<option value="${d.id}">${escapeHtml(d.name)} (${Array.isArray(d.main_deck) ? d.main_deck.length : 0}张)</option>`).join('')}
               </select>
             </div>
             <button type="submit" class="btn btn-primary btn-block">加入</button>

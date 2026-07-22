@@ -607,6 +607,10 @@ ensureColumn('battles', 'player2_wins', "player2_wins INTEGER DEFAULT 0");
 ensureColumn('battles', 'current_game', "current_game INTEGER DEFAULT 1");
 ensureColumn('battles', 'round', "round INTEGER DEFAULT 1");
 ensureColumn('battles', 'bracket', "bracket TEXT DEFAULT 'winners'");
+ensureColumn('battles', 'battle_type', "battle_type TEXT DEFAULT '1v1'");
+ensureColumn('battles', 'deck_type', "deck_type TEXT DEFAULT 'normal'");
+ensureColumn('battles', 'format_type', "format_type TEXT DEFAULT 'normal'");
+ensureColumn('battles', 'player_count', "player_count INTEGER DEFAULT 2");
 ensureColumn('decks', 'outside_game', "outside_game TEXT DEFAULT '[]'");
 ensureColumn('users', 'role', "role TEXT DEFAULT 'user'");
 ensureColumn('steps', 'parent_id', "parent_id INTEGER DEFAULT NULL");
@@ -1333,37 +1337,99 @@ app.post('/api/cards/batch-search', authMiddleware, async (req, res) => {
     }
 
     const data = await response.json();
-    const cards = (data.data || []).map(c => ({
-      id: c.id, name: c.name, manaCost: getCardManaCost(c), cmc: c.cmc || 0,
-      type: c.type_line || '', colors: c.colors || [], color_identity: c.color_identity || [],
-      rarity: c.rarity || 'common', text: getCardText(c),
-      power: getCardPowerToughness(c).power, toughness: getCardPowerToughness(c).toughness,
-      loyalty: c.loyalty || null, keywords: c.keywords || [],
-      image: getCardImageUris(c) ? getCardImageUris(c).normal : null,
-      image_small: getCardImageUris(c) ? getCardImageUris(c).small : null,
-      image_back: getCardBackImageUris(c) ? getCardBackImageUris(c).normal : null,
-      image_small_back: getCardBackImageUris(c) ? getCardBackImageUris(c).small : null,
-      type_back: getCardBackType(c) || null,
-      loyalty_back: getCardBackLoyalty(c) || null,
-      set: c.set || '', set_name: c.set_name || ''
-    }));
 
-    const foundNamesSet = new Set(cards.map(c => c.name.toLowerCase()));
-    // Also check DFC face names
-    for (const sfCard of (data.data || [])) {
-      if (sfCard.card_faces) {
-        for (const face of sfCard.card_faces) {
-          if (face.name) foundNamesSet.add(face.name.toLowerCase());
+    // Build a mapping from input names to found cards (including DFC face name matches)
+    const nameToCardMap = {};
+    const cards = (data.data || []).map(c => {
+      const card = {
+        id: c.id, name: c.name, manaCost: getCardManaCost(c), cmc: c.cmc || 0,
+        type: c.type_line || '', colors: c.colors || [], color_identity: c.color_identity || [],
+        rarity: c.rarity || 'common', text: getCardText(c),
+        power: getCardPowerToughness(c).power, toughness: getCardPowerToughness(c).toughness,
+        loyalty: c.loyalty || null, keywords: c.keywords || [],
+        image: getCardImageUris(c) ? getCardImageUris(c).normal : null,
+        image_small: getCardImageUris(c) ? getCardImageUris(c).small : null,
+        image_back: getCardBackImageUris(c) ? getCardBackImageUris(c).normal : null,
+        image_small_back: getCardBackImageUris(c) ? getCardBackImageUris(c).small : null,
+        type_back: getCardBackType(c) || null,
+        loyalty_back: getCardBackLoyalty(c) || null,
+        set: c.set || '', set_name: c.set_name || ''
+      };
+      // Map the card's main name
+      nameToCardMap[c.name.toLowerCase()] = card;
+      // Also map DFC face names
+      if (c.card_faces) {
+        for (const face of c.card_faces) {
+          if (face.name) nameToCardMap[face.name.toLowerCase()] = card;
         }
+      }
+      return card;
+    });
+
+    // Build matchedName for each card: which input name(s) it matched
+    const matchedNameMap = {};
+    for (const inputName of uniqueNames) {
+      const key = inputName.toLowerCase();
+      if (nameToCardMap[key]) {
+        const card = nameToCardMap[key];
+        matchedNameMap[card.id] = inputName;
+      }
+    }
+    // Add matchedName to each card
+    for (const card of cards) {
+      card.matchedName = matchedNameMap[card.id] || card.name;
+    }
+
+    const foundNamesSet = new Set(Object.keys(nameToCardMap));
+    const failed = uniqueNames.filter(n => !foundNamesSet.has(n.toLowerCase()));
+
+    // Fallback: retry failed names using fuzzy search
+    const fallbackCards = [];
+    const stillFailed = [];
+    for (const failedName of failed) {
+      try {
+        const searchUrl = `https://api.scryfall.com/cards/search?q=${encodeURIComponent(failedName)}&order=name`;
+        const searchRes = await fetch(searchUrl, {
+          headers: { 'User-Agent': 'MTGLimitedSite/2.0', 'Accept': 'application/json' }
+        });
+        if (searchRes.ok) {
+          const searchData = await searchRes.json();
+          if (searchData.data && searchData.data.length > 0) {
+            const c = searchData.data[0];
+            const card = {
+              id: c.id, name: c.name, matchedName: failedName, manaCost: getCardManaCost(c), cmc: c.cmc || 0,
+              type: c.type_line || '', colors: c.colors || [], color_identity: c.color_identity || [],
+              rarity: c.rarity || 'common', text: getCardText(c),
+              power: getCardPowerToughness(c).power, toughness: getCardPowerToughness(c).toughness,
+              loyalty: c.loyalty || null, keywords: c.keywords || [],
+              image: getCardImageUris(c) ? getCardImageUris(c).normal : null,
+              image_small: getCardImageUris(c) ? getCardImageUris(c).small : null,
+              image_back: getCardBackImageUris(c) ? getCardBackImageUris(c).normal : null,
+              image_small_back: getCardBackImageUris(c) ? getCardBackImageUris(c).small : null,
+              type_back: getCardBackType(c) || null,
+              loyalty_back: getCardBackLoyalty(c) || null,
+              set: c.set || '', set_name: c.set_name || ''
+            };
+            fallbackCards.push(card);
+            // Cache the result
+            scryfallCache.set(c.name.toLowerCase(), card);
+            continue;
+          }
+        }
+        stillFailed.push(failedName);
+      } catch (e) {
+        stillFailed.push(failedName);
       }
     }
 
-    const failed = uniqueNames.filter(n => !foundNamesSet.has(n.toLowerCase()));
+    // Merge fallback results
+    const allCards = cards.concat(fallbackCards);
+    const finalFailed = stillFailed;
 
     // Cache found cards
     for (const sfCard of (data.data || [])) {
       if (!sfCard.name) continue;
-      const card = cards.find(c => c.name === sfCard.name);
+      const card = allCards.find(c => c.name === sfCard.name);
       if (card) {
         scryfallCache.set(sfCard.name.toLowerCase(), card);
         if (sfCard.card_faces && sfCard.card_faces.length > 1) {
@@ -1376,7 +1442,7 @@ app.post('/api/cards/batch-search', authMiddleware, async (req, res) => {
       }
     }
 
-    res.json({ cards, failed, total: names.length });
+    res.json({ cards: allCards, failed: finalFailed, total: names.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2060,10 +2126,14 @@ app.get('/api/decks', authMiddleware, (req, res) => {
     FROM decks d LEFT JOIN events e ON d.event_id = e.id
     WHERE d.user_id = ? ORDER BY d.created_at DESC
   `).all(req.user.id);
-  const result = decks.map(d => ({
-    ...d, main_deck: JSON.parse(d.main_deck || '[]'), sideboard: JSON.parse(d.sideboard || '[]'),
-    outside_game: JSON.parse(d.outside_game || '[]')
-  }));
+  const result = decks.map(d => {
+    const deck = {
+      ...d, main_deck: JSON.parse(d.main_deck || '[]'), sideboard: JSON.parse(d.sideboard || '[]'),
+      outside_game: JSON.parse(d.outside_game || '[]')
+    };
+    deck.type = getDeckType(deck);
+    return deck;
+  });
   res.json(result);
 });
 
@@ -2081,6 +2151,15 @@ app.get('/api/events/:id/my-deck', authMiddleware, (req, res) => {
   res.json(deck);
 });
 
+// Helper: calculate deck type based on card count (100 cards = commander)
+function getDeckType(deck) {
+  var mainCount = Array.isArray(deck.main_deck) ? deck.main_deck.length : 0;
+  var sbCount = Array.isArray(deck.sideboard) ? deck.sideboard.length : 0;
+  var ogCount = Array.isArray(deck.outside_game) ? deck.outside_game.length : 0;
+  var total = mainCount + sbCount + ogCount;
+  return total === 100 ? 'commander' : 'normal';
+}
+
 app.post('/api/decks', authMiddleware, (req, res) => {
   try {
     const { name, main_deck, sideboard, outside_game, event_id } = req.body;
@@ -2092,6 +2171,7 @@ app.post('/api/decks', authMiddleware, (req, res) => {
     deck.main_deck = JSON.parse(deck.main_deck);
     deck.sideboard = JSON.parse(deck.sideboard);
     deck.outside_game = JSON.parse(deck.outside_game || '[]');
+    deck.type = getDeckType(deck);
     res.json(deck);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2106,6 +2186,7 @@ app.get('/api/decks/:id', authMiddleware, (req, res) => {
   deck.main_deck = JSON.parse(deck.main_deck);
   deck.sideboard = JSON.parse(deck.sideboard);
   deck.outside_game = JSON.parse(deck.outside_game || '[]');
+  deck.type = getDeckType(deck);
   res.json(deck);
 });
 
@@ -2443,7 +2524,7 @@ app.post('/api/events/:id/next-round', authMiddleware, (req, res) => {
 
 app.post('/api/battles', authMiddleware, (req, res) => {
   try {
-    const { deck_id, name, event_id } = req.body;
+    const { deck_id, name, event_id, battle_type, deck_type, format_type, player_count } = req.body;
     if (!deck_id) return res.status(400).json({ error: '请选择一个牌组' });
     const deck = isAdmin(req)
       ? db.prepare('SELECT * FROM decks WHERE id = ?').get(deck_id)
@@ -2453,8 +2534,13 @@ app.post('/api/battles', authMiddleware, (req, res) => {
       name: deck.name, main_deck: JSON.parse(deck.main_deck), sideboard: JSON.parse(deck.sideboard),
       outside_game: JSON.parse(deck.outside_game || '[]')
     };
-    const result = db.prepare('INSERT INTO battles (name, player1_id, player1_deck, event_id) VALUES (?, ?, ?, ?)').run(
-      name || `${req.user.username}的对战`, req.user.id, JSON.stringify(deckData), event_id || null
+    const bType = battle_type || '1v1';
+    const dType = deck_type || 'normal';
+    const fType = format_type || 'normal';
+    const pCount = bType === 'multiplayer' ? (parseInt(player_count) || 3) : 2;
+    const result = db.prepare('INSERT INTO battles (name, player1_id, player1_deck, event_id, battle_type, deck_type, format_type, player_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
+      name || `${req.user.username}的对战`, req.user.id, JSON.stringify(deckData), event_id || null,
+      bType, dType, fType, pCount
     );
     const battle = db.prepare(`
       SELECT b.*, u1.username as player1_name FROM battles b
@@ -2494,6 +2580,14 @@ app.post('/api/battles/:id/join', authMiddleware, (req, res) => {
       ? db.prepare('SELECT * FROM decks WHERE id = ?').get(deck_id)
       : db.prepare('SELECT * FROM decks WHERE id = ? AND user_id = ?').get(deck_id, req.user.id);
     if (!deck) return res.status(404).json({ error: '牌组不存在' });
+    var isLimited = !!deck.event_id;
+    var deckType = getDeckType(deck);
+    var bDeckType = battle.deck_type || 'normal';
+    var bFormatType = battle.format_type || 'normal';
+    if (bDeckType === 'commander' && deckType !== 'commander') return res.status(400).json({ error: '该对战要求指挥官牌组' });
+    if (bDeckType === 'normal' && deckType !== 'normal') return res.status(400).json({ error: '该对战要求普通牌组' });
+    if (bFormatType === 'limited' && !isLimited) return res.status(400).json({ error: '该对战要求限制赛牌组' });
+    if (bFormatType === 'normal' && isLimited) return res.status(400).json({ error: '该对战要求非限制赛牌组' });
     const deckData = {
       name: deck.name, main_deck: JSON.parse(deck.main_deck), sideboard: JSON.parse(deck.sideboard),
       outside_game: JSON.parse(deck.outside_game || '[]')

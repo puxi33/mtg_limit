@@ -2609,20 +2609,21 @@ async function renderDecks(el) {
         '<h2>我的牌组</h2>' +
         '<div style="display:flex;gap:8px">' +
           '<button class="btn btn-primary" onclick="showCreateDeckModal()">创建牌组</button>' +
-          '<button class="btn btn-secondary" onclick="showBatchImportDeckModal()">批量导入</button>' +
+          '<button class="btn btn-secondary" onclick="quickImportDeck()">快速导入</button>' +
         '</div>' +
       '</div>' +
       '<div class="card-grid">' +
         customDecks.map(function(deck) {
           var mainCount = Array.isArray(deck.main_deck) ? deck.main_deck.length : 0;
           var sbCount = Array.isArray(deck.sideboard) ? deck.sideboard.length : 0;
+          var isCommander = deck.type === 'commander';
+          var tag = isCommander ? '<span class="deck-tag commander-tag">指挥官</span>' : '';
+          var metaSpans = '<span>主牌: ' + mainCount + '张</span>' +
+            (isCommander ? '' : '<span>备牌: ' + sbCount + '/15张</span>');
           return '<div class="card-item" onclick="navigate(\'deck-detail\', {id:' + deck.id + '})" style="position:relative">' +
             '<button class="btn btn-sm card-delete-btn" onclick="event.stopPropagation();deleteCustomDeck(' + deck.id + ')" title="删除牌组">&times;</button>' +
-            '<h3>' + escapeHtml(deck.name) + '</h3>' +
-            '<div class="card-meta">' +
-              '<span>主牌: ' + mainCount + '张</span>' +
-              '<span>备牌: ' + sbCount + '/15张</span>' +
-            '</div>' +
+            '<h3>' + escapeHtml(deck.name) + ' ' + tag + '</h3>' +
+            '<div class="card-meta">' + metaSpans + '</div>' +
             '<div class="text-muted" style="font-size:0.75rem;margin-top:4px">' + new Date(deck.created_at).toLocaleDateString() + '</div>' +
           '</div>';
         }).join('') +
@@ -2637,6 +2638,9 @@ async function showCreateDeckModal() {
   showModal('创建自定义牌组',
     '<form onsubmit="handleCreateDeck(event)">' +
     '<div class="form-group"><label>牌组名称</label><input type="text" id="new-deck-name" required placeholder="输入牌组名称"></div>' +
+    '<div class="form-group"><label>导入牌组内容 (可选)</label>' +
+    '<textarea id="new-deck-content" rows="10" style="width:100%;font-family:monospace;font-size:0.85rem" placeholder="粘贴牌组内容，支持以下格式:\n\nAbout\nName 我的牌组\n\nDeck\n4 Lightning Bolt\n2 Counterspell\n\nSideboard\n1 Black Lotus\n\nCommander\n1 Atraxa, Praetors\' Voice\n\n--- 或直接粘贴卡牌列表 ---\n4 Lightning Bolt\n2 Counterspell"></textarea></div>' +
+    '<div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:12px">提示: 使用 Deck / Sideboard / Commander 分区标记，卡牌会自动分配到对应区域。不带分区标记则全部放入主牌组。</div>' +
     '<button type="submit" class="btn btn-primary btn-block">创建</button>' +
     '</form>'
   );
@@ -2645,12 +2649,165 @@ async function showCreateDeckModal() {
 async function handleCreateDeck(e) {
   e.preventDefault();
   var name = document.getElementById('new-deck-name').value.trim();
+  var contentEl = document.getElementById('new-deck-content');
+  var content = contentEl ? contentEl.value.trim() : '';
   if (!name) { showToast('请输入牌组名称', 'error'); return; }
+
+  var parsed = parseDeckText(content);
+  // If About section has a name and user didn't change the name field, use parsed name
+  if (parsed.name && name === '我的牌组') {
+    name = parsed.name;
+  }
+
+  var totalEntries = parsed.deck.length + parsed.sideboard.length + parsed.commander.length;
+
   try {
-    var deck = await api('/api/decks', { method: 'POST', body: JSON.stringify({ name: name, main_deck: [], sideboard: [] }) });
-    closeModal();
-    showToast('牌组已创建');
-    navigate('deck-detail', { id: deck.id });
+    // Create the deck first
+    var deck = await api('/api/decks', { method: 'POST', body: JSON.stringify({ name: name, main_deck: [], sideboard: [], outside_game: [] }) });
+
+    if (totalEntries === 0) {
+      closeModal();
+      showToast('牌组已创建');
+      navigate('deck-detail', { id: deck.id });
+      return;
+    }
+
+    // Show progress in modal
+    document.getElementById('modal-title').textContent = '创建牌组 - 导入中';
+    document.getElementById('modal-body').innerHTML =
+      '<div style="padding:20px">' +
+        '<div style="margin-bottom:12px;font-size:0.9rem">正在从Scryfall获取卡牌数据...</div>' +
+        '<div style="background:var(--border);border-radius:4px;height:8px;overflow:hidden;margin-bottom:6px">' +
+          '<div id="import-bar" style="background:var(--accent);height:100%;width:0%;transition:width 0.2s"></div>' +
+        '</div>' +
+        '<div id="import-text" style="font-size:0.8rem;text-align:center;color:var(--text-muted)">准备中...</div>' +
+      '</div>';
+
+    var mainDeck = [];
+    var sideboard = [];
+    var outsideGame = [];
+    var allFailed = [];
+
+    // Collect all entries with zone info
+    var allEntries = [];
+    parsed.deck.forEach(function(e) { allEntries.push({ name: e.name, count: e.count, zone: 'main' }); });
+    parsed.sideboard.forEach(function(e) { allEntries.push({ name: e.name, count: e.count, zone: 'sideboard' }); });
+    parsed.commander.forEach(function(e) { allEntries.push({ name: e.name, count: e.count, zone: 'commander' }); });
+
+    // Build name->entries[] map (same card can appear in multiple zones)
+    var entryMap = {};
+    allEntries.forEach(function(e) {
+      var key = e.name.toLowerCase();
+      if (!entryMap[key]) entryMap[key] = [];
+      entryMap[key].push(e);
+    });
+
+    // Validate: no card name should exceed 4 copies total (except commanders and basic lands)
+    var basicLands = ['plains', 'island', 'swamp', 'mountain', 'forest'];
+    var overLimit = [];
+    Object.keys(entryMap).forEach(function(key) {
+      if (basicLands.indexOf(key) !== -1) return; // Skip basic lands
+      var entries = entryMap[key];
+      var totalCount = 0;
+      entries.forEach(function(e) {
+        if (e.zone !== 'commander') totalCount += e.count;
+      });
+      if (totalCount > 4) {
+        overLimit.push({ name: entries[0].name, count: totalCount });
+      }
+    });
+    if (overLimit.length > 0) {
+      closeModal();
+      var msg = '以下卡牌超过4张限制:\n' + overLimit.map(function(o) { return o.name + ' (' + o.count + '张)'; }).join('\n');
+      showToast(msg, 'error');
+      return;
+    }
+
+    // Deduplicate all names
+    var uniqueNames = [];
+    allEntries.forEach(function(e) {
+      if (uniqueNames.indexOf(e.name) === -1) uniqueNames.push(e.name);
+    });
+
+    // Process in batches of 10
+    var BATCH_SIZE = 10;
+    var totalAdded = 0;
+
+    for (var i = 0; i < uniqueNames.length; i += BATCH_SIZE) {
+      var chunk = uniqueNames.slice(i, i + BATCH_SIZE);
+      var pct = Math.round(((i + chunk.length) / uniqueNames.length) * 100);
+      var bar = document.getElementById('import-bar');
+      var txt = document.getElementById('import-text');
+      if (bar) bar.style.width = pct + '%';
+      if (txt) txt.textContent = '获取卡牌... ' + Math.min(i + chunk.length, uniqueNames.length) + '/' + uniqueNames.length + ' (' + pct + '%)';
+
+      try {
+        var res = await api('/api/cards/batch-search', {
+          method: 'POST',
+          body: JSON.stringify({ names: chunk })
+        });
+        // Route found cards to correct zones (handle same card in multiple zones)
+        if (res.cards && res.cards.length > 0) {
+          res.cards.forEach(function(card) {
+            var matchKey = (card.matchedName || card.name).toLowerCase();
+            var entries = entryMap[matchKey];
+            if (entries) {
+              entries.forEach(function(entry) {
+                var target = entry.zone === 'sideboard' ? sideboard : entry.zone === 'commander' ? outsideGame : mainDeck;
+                for (var j = 0; j < entry.count; j++) { target.push(card); }
+              });
+            }
+          });
+          totalAdded += res.cards.length;
+        }
+        // Collect failed names
+        if (res.failed && res.failed.length > 0) {
+          res.failed.forEach(function(failedName) {
+            var entries = entryMap[failedName.toLowerCase()];
+            if (entries) {
+              var total = 0;
+              entries.forEach(function(e) { total += e.count; });
+              allFailed.push(total + 'x ' + failedName);
+            } else {
+              allFailed.push(failedName);
+            }
+          });
+        }
+      } catch (err) {
+        chunk.forEach(function(n) {
+          var entries = entryMap[n.toLowerCase()];
+          if (entries) {
+            var total = 0;
+            entries.forEach(function(e) { total += e.count; });
+            allFailed.push(total + 'x ' + n);
+          } else {
+            allFailed.push(n);
+          }
+        });
+      }
+    }
+
+    // Update the deck with all cards
+    await api('/api/decks/' + deck.id, {
+      method: 'PUT',
+      body: JSON.stringify({ main_deck: mainDeck, sideboard: sideboard, outside_game: outsideGame })
+    });
+
+    if (allFailed.length > 0) {
+      document.getElementById('modal-title').textContent = '导入完成 - 部分卡牌未找到';
+      document.getElementById('modal-body').innerHTML =
+        '<div style="padding:12px">' +
+          '<div style="margin-bottom:12px;font-size:0.9rem">牌组已创建，成功导入 ' + totalAdded + '/' + uniqueNames.length + ' 种卡牌，以下 <strong>' + allFailed.length + '</strong> 种卡牌未找到：</div>' +
+          '<div style="max-height:200px;overflow-y:auto;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:16px;font-family:monospace;font-size:0.85rem;line-height:1.6">' +
+            allFailed.map(function(n) { return '<div style="color:var(--danger)">' + escapeHtml(n) + '</div>'; }).join('') +
+          '</div>' +
+          '<button class="btn btn-primary btn-block" onclick="closeModal();navigate(\'deck-detail\',{id:' + deck.id + '})">确认</button>' +
+        '</div>';
+    } else {
+      closeModal();
+      showToast('牌组已创建，导入 ' + totalAdded + '/' + uniqueNames.length + ' 种卡牌');
+      navigate('deck-detail', { id: deck.id });
+    }
   } catch (err) {
     showToast(err.message, 'error');
   }
@@ -2667,13 +2824,184 @@ async function deleteCustomDeck(id) {
   }
 }
 
+async function quickImportDeck() {
+  try {
+    var text = await navigator.clipboard.readText();
+    if (!text || !text.trim()) {
+      showToast('剪贴板为空或无法读取', 'error');
+      return;
+    }
+
+    var parsed = parseDeckText(text);
+    var totalEntries = parsed.deck.length + parsed.sideboard.length + parsed.commander.length;
+    if (totalEntries === 0) {
+      showToast('剪贴板中没有解析到卡牌', 'error');
+      return;
+    }
+
+    // Determine deck name
+    var name = parsed.name || '快速导入牌组';
+
+    // Show modal with progress
+    showModal('快速导入',
+      '<div style="padding:20px">' +
+        '<div style="margin-bottom:12px;font-size:0.9rem">牌组名称: <strong>' + escapeHtml(name) + '</strong></div>' +
+        '<div style="margin-bottom:12px;font-size:0.85rem;color:var(--text-muted)">' +
+          '主牌: ' + parsed.deck.length + ' 种 | 备牌: ' + parsed.sideboard.length + ' 种 | 指挥官: ' + parsed.commander.length + ' 种' +
+        '</div>' +
+        '<div style="margin-bottom:12px;font-size:0.9rem">正在从Scryfall获取卡牌数据...</div>' +
+        '<div style="background:var(--border);border-radius:4px;height:8px;overflow:hidden;margin-bottom:6px">' +
+          '<div id="import-bar" style="background:var(--accent);height:100%;width:0%;transition:width 0.2s"></div>' +
+        '</div>' +
+        '<div id="import-text" style="font-size:0.8rem;text-align:center;color:var(--text-muted)">准备中...</div>' +
+      '</div>'
+    );
+
+    // Create the deck
+    var deck = await api('/api/decks', { method: 'POST', body: JSON.stringify({ name: name, main_deck: [], sideboard: [], outside_game: [] }) });
+
+    var mainDeck = [];
+    var sideboard = [];
+    var outsideGame = [];
+    var allFailed = [];
+
+    // Collect all entries with zone info
+    var allEntries = [];
+    parsed.deck.forEach(function(e) { allEntries.push({ name: e.name, count: e.count, zone: 'main' }); });
+    parsed.sideboard.forEach(function(e) { allEntries.push({ name: e.name, count: e.count, zone: 'sideboard' }); });
+    parsed.commander.forEach(function(e) { allEntries.push({ name: e.name, count: e.count, zone: 'commander' }); });
+
+    // Build name->entries[] map (same card can appear in multiple zones)
+    var entryMap = {};
+    allEntries.forEach(function(e) {
+      var key = e.name.toLowerCase();
+      if (!entryMap[key]) entryMap[key] = [];
+      entryMap[key].push(e);
+    });
+
+    // Validate: no card name should exceed 4 copies total (except commanders and basic lands)
+    var basicLands = ['plains', 'island', 'swamp', 'mountain', 'forest'];
+    var overLimit = [];
+    Object.keys(entryMap).forEach(function(key) {
+      if (basicLands.indexOf(key) !== -1) return; // Skip basic lands
+      var entries = entryMap[key];
+      var totalCount = 0;
+      entries.forEach(function(e) {
+        if (e.zone !== 'commander') totalCount += e.count;
+      });
+      if (totalCount > 4) {
+        overLimit.push({ name: entries[0].name, count: totalCount });
+      }
+    });
+    if (overLimit.length > 0) {
+      closeModal();
+      var msg = '以下卡牌超过4张限制:\n' + overLimit.map(function(o) { return o.name + ' (' + o.count + '张)'; }).join('\n');
+      showToast(msg, 'error');
+      return;
+    }
+
+    // Deduplicate all names
+    var uniqueNames = [];
+    allEntries.forEach(function(e) {
+      if (uniqueNames.indexOf(e.name) === -1) uniqueNames.push(e.name);
+    });
+
+    // Process in batches of 10
+    var BATCH_SIZE = 10;
+    var totalAdded = 0;
+
+    for (var i = 0; i < uniqueNames.length; i += BATCH_SIZE) {
+      var chunk = uniqueNames.slice(i, i + BATCH_SIZE);
+      var pct = Math.round(((i + chunk.length) / uniqueNames.length) * 100);
+      var bar = document.getElementById('import-bar');
+      var txt = document.getElementById('import-text');
+      if (bar) bar.style.width = pct + '%';
+      if (txt) txt.textContent = '获取卡牌... ' + Math.min(i + chunk.length, uniqueNames.length) + '/' + uniqueNames.length + ' (' + pct + '%)';
+
+      try {
+        var res = await api('/api/cards/batch-search', {
+          method: 'POST',
+          body: JSON.stringify({ names: chunk })
+        });
+        // Route found cards to correct zones (handle same card in multiple zones)
+        if (res.cards && res.cards.length > 0) {
+          res.cards.forEach(function(card) {
+            var matchKey = (card.matchedName || card.name).toLowerCase();
+            var entries = entryMap[matchKey];
+            if (entries) {
+              entries.forEach(function(entry) {
+                var target = entry.zone === 'sideboard' ? sideboard : entry.zone === 'commander' ? outsideGame : mainDeck;
+                for (var j = 0; j < entry.count; j++) { target.push(card); }
+              });
+            }
+          });
+          totalAdded += res.cards.length;
+        }
+        // Collect failed names
+        if (res.failed && res.failed.length > 0) {
+          res.failed.forEach(function(failedName) {
+            var entries = entryMap[failedName.toLowerCase()];
+            if (entries) {
+              var total = 0;
+              entries.forEach(function(e) { total += e.count; });
+              allFailed.push(total + 'x ' + failedName);
+            } else {
+              allFailed.push(failedName);
+            }
+          });
+        }
+      } catch (err) {
+        chunk.forEach(function(n) {
+          var entries = entryMap[n.toLowerCase()];
+          if (entries) {
+            var total = 0;
+            entries.forEach(function(e) { total += e.count; });
+            allFailed.push(total + 'x ' + n);
+          } else {
+            allFailed.push(n);
+          }
+        });
+      }
+    }
+
+    // Update the deck with all cards
+    await api('/api/decks/' + deck.id, {
+      method: 'PUT',
+      body: JSON.stringify({ main_deck: mainDeck, sideboard: sideboard, outside_game: outsideGame })
+    });
+
+    if (allFailed.length > 0) {
+      document.getElementById('modal-title').textContent = '导入完成 - 部分卡牌未找到';
+      document.getElementById('modal-body').innerHTML =
+        '<div style="padding:12px">' +
+          '<div style="margin-bottom:12px;font-size:0.9rem">牌组「' + escapeHtml(name) + '」已创建，成功导入 ' + totalAdded + '/' + uniqueNames.length + ' 种卡牌，以下 <strong>' + allFailed.length + '</strong> 种卡牌未找到：</div>' +
+          '<div style="max-height:200px;overflow-y:auto;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);padding:8px 12px;margin-bottom:16px;font-family:monospace;font-size:0.85rem;line-height:1.6">' +
+            allFailed.map(function(n) { return '<div style="color:var(--danger)">' + escapeHtml(n) + '</div>'; }).join('') +
+          '</div>' +
+          '<button class="btn btn-primary btn-block" onclick="closeModal();navigate(\'deck-detail\',{id:' + deck.id + '})">确认</button>' +
+        '</div>';
+    } else {
+      closeModal();
+      showToast('牌组「' + name + '」已创建，导入 ' + totalAdded + '/' + uniqueNames.length + ' 种卡牌');
+      navigate('deck-detail', { id: deck.id });
+    }
+  } catch (err) {
+    if (err.name === 'NotAllowedError') {
+      showToast('无法读取剪贴板，请授权访问', 'error');
+    } else {
+      showToast(err.message || '导入失败', 'error');
+    }
+  }
+}
+
 async function showBatchImportDeckModal() {
   showModal('批量导入卡牌',
     '<form onsubmit="handleBatchImportToDeck(event)">' +
     '<div class="form-group"><label>牌组</label>' +
     '<select id="batch-import-deck-select" required></select></div>' +
-    '<div class="form-group"><label>卡牌列表 (每行一张, 格式: 数量 卡名)</label>' +
-    '<textarea id="batch-import-text" rows="10" style="width:100%;font-family:monospace" placeholder="例如:\n4 Lightning Bolt\n2 Counterspell\n1 Black Lotus"></textarea></div>' +
+    '<div class="form-group"><label>卡牌列表 (支持分区导入)</label>' +
+    '<textarea id="batch-import-text" rows="14" style="width:100%;font-family:monospace;font-size:0.85rem" placeholder="支持以下格式:\n\nAbout\nName 我的牌组\n\nDeck\n4 Lightning Bolt\n2 Counterspell\n\nSideboard\n1 Black Lotus\n\nCommander\n1 Atraxa, Praetors\' Voice\n\n--- 或直接粘贴卡牌列表 ---\n4 Lightning Bolt\n2 Counterspell"></textarea></div>' +
+    '<div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:12px">提示: 使用 Deck / Sideboard / Commander 分区标记，卡牌会自动导入到对应区域。不带分区标记则全部导入主牌组。</div>' +
     '<button type="submit" class="btn btn-primary btn-block">导入</button>' +
     '</form>'
   );
@@ -2697,38 +3025,59 @@ async function handleBatchImportToDeck(e) {
   var text = document.getElementById('batch-import-text').value.trim();
   if (!deckId) { showToast('请选择牌组', 'error'); return; }
   if (!text) { showToast('请输入卡牌列表', 'error'); return; }
-  // Parse lines: "4 CardName" or "CardName"
-  var lines = text.split('\n').filter(function(l) { return l.trim(); });
-  var cardEntries = lines.map(function(line) {
-    var match = line.trim().match(/^(\d+)\s+(.+)$/);
-    if (match) return { name: match[2].trim(), count: parseInt(match[1]) };
-    return { name: line.trim(), count: 1 };
-  });
+
+  // Parse structured text with sections
+  var parsed = parseDeckText(text);
+  var totalEntries = parsed.deck.length + parsed.sideboard.length + parsed.commander.length;
+  if (totalEntries === 0) { showToast('没有解析到任何卡牌', 'error'); return; }
+
   try {
     closeModal();
-    showToast('正在导入 ' + cardEntries.length + ' 种卡牌...');
+    showToast('正在导入 ' + totalEntries + ' 种卡牌...');
     var deck = await api('/api/decks/' + deckId);
     var mainDeck = Array.isArray(deck.main_deck) ? deck.main_deck : [];
+    var sideboard = Array.isArray(deck.sideboard) ? deck.sideboard : [];
+    var outsideGame = Array.isArray(deck.outside_game) ? deck.outside_game : [];
+
     var added = 0, failed = 0;
-    for (var i = 0; i < cardEntries.length; i++) {
-      var entry = cardEntries[i];
-      try {
-        var res = await api('/api/cards/search?q=' + encodeURIComponent(entry.name));
-        if (res.cards && res.cards.length > 0) {
-          for (var j = 0; j < entry.count; j++) {
-            mainDeck.push(res.cards[0]);
+
+    // Helper: search and add cards to a target array
+    async function importEntries(entries, targetArr) {
+      for (var i = 0; i < entries.length; i++) {
+        var entry = entries[i];
+        try {
+          var res = await api('/api/cards/search?q=' + encodeURIComponent(entry.name));
+          if (res.cards && res.cards.length > 0) {
+            for (var j = 0; j < entry.count; j++) {
+              targetArr.push(res.cards[0]);
+            }
+            added += entry.count;
+          } else {
+            failed++;
           }
-          added += entry.count;
-        } else {
+        } catch (err) {
           failed++;
         }
-      } catch (err) {
-        failed++;
       }
     }
+
+    // Import each section
+    await importEntries(parsed.deck, mainDeck);
+    await importEntries(parsed.sideboard, sideboard);
+    await importEntries(parsed.commander, outsideGame);
+
     // Save the updated deck
-    await api('/api/decks/' + deckId, { method: 'PUT', body: JSON.stringify({ main_deck: mainDeck, sideboard: deck.sideboard }) });
-    showToast('导入完成: 成功 ' + added + ' 张, 失败 ' + failed + ' 种');
+    await api('/api/decks/' + deckId, {
+      method: 'PUT',
+      body: JSON.stringify({ main_deck: mainDeck, sideboard: sideboard, outside_game: outsideGame })
+    });
+
+    var msg = '导入完成: 成功 ' + added + ' 张';
+    if (parsed.deck.length > 0) msg += ', 主牌 ' + parsed.deck.length + ' 种';
+    if (parsed.sideboard.length > 0) msg += ', 备牌 ' + parsed.sideboard.length + ' 种';
+    if (parsed.commander.length > 0) msg += ', 指挥官 ' + parsed.commander.length + ' 种';
+    if (failed > 0) msg += ', 失败 ' + failed + ' 种';
+    showToast(msg);
     navigate('deck-detail', { id: deckId });
   } catch (err) {
     showToast(err.message, 'error');
@@ -2799,6 +3148,15 @@ function renderDeckDetailUI(el) {
       '<div class="draft-columns-area" id="deck-columns-area">' +
         '<div class="draft-columns-header">' +
           '<span style="color:var(--text-bright);font-size:0.85rem;font-weight:600">卡牌分组 <span class="text-muted" id="deck-pool-count" style="font-weight:400">' + totalCards + '张</span></span>' +
+          '<button class="btn btn-sm btn-secondary" style="margin-left:auto" onclick="toggleDeckBatchImport()">批量导入</button>' +
+        '</div>' +
+        '<div id="deck-batch-import-area" style="display:none;padding:12px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:8px">' +
+          '<div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:8px">支持 Deck / Sideboard / Commander 分区格式，也可粘贴纯卡牌列表</div>' +
+          '<textarea id="deck-batch-import-text" rows="8" style="width:100%;font-family:monospace;font-size:0.8rem;background:var(--bg-dark);border:1px solid var(--border);border-radius:4px;color:var(--text-bright);padding:8px;resize:vertical" placeholder="Deck\n4 Lightning Bolt\n2 Counterspell\n\nSideboard\n1 Black Lotus\n\nCommander\n1 Atraxa, Praetors\' Voice"></textarea>' +
+          '<div style="display:flex;gap:8px;margin-top:8px">' +
+            '<button class="btn btn-primary btn-sm" onclick="batchImportToCurrentDeck()">导入</button>' +
+            '<button class="btn btn-secondary btn-sm" onclick="toggleDeckBatchImport()">收起</button>' +
+          '</div>' +
         '</div>' +
         '<div class="draft-columns-scroll" id="deck-columns-scroll"></div>' +
       '</div>' +
@@ -3158,13 +3516,93 @@ function parseDeckLine(line) {
   return { count: count, name: fullName, set: set };
 }
 
+// Parse structured deck text with sections: About/Name, Deck, Sideboard, Commander
+// Returns { name: string|null, deck: [{count,name,set}], sideboard: [...], commander: [...] }
+function parseDeckText(text) {
+  var result = { name: null, deck: [], sideboard: [], commander: [] };
+  if (!text || !text.trim()) return result;
+
+  var lines = text.split('\n');
+  var currentSection = null; // 'deck', 'sideboard', 'commander', 'about'
+  var hasSectionMarkers = false;
+
+  // First pass: detect if there are section markers
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim();
+    if (/^(Deck|Sideboard|Commander|About)\s*$/i.test(line)) {
+      hasSectionMarkers = true;
+      break;
+    }
+  }
+
+  if (!hasSectionMarkers) {
+    // No section markers — treat all lines as main deck (backward compatible)
+    for (var i = 0; i < lines.length; i++) {
+      var parsed = parseDeckLine(lines[i]);
+      if (parsed) result.deck.push(parsed);
+    }
+    return result;
+  }
+
+  // Second pass: parse sections
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim();
+    if (!line) continue;
+
+    // Check for section headers
+    if (/^Deck\s*$/i.test(line)) { currentSection = 'deck'; continue; }
+    if (/^Sideboard\s*$/i.test(line)) { currentSection = 'sideboard'; continue; }
+    if (/^Commander\s*$/i.test(line)) { currentSection = 'commander'; continue; }
+    if (/^About\s*$/i.test(line)) { currentSection = 'about'; continue; }
+
+    // Parse based on current section
+    if (currentSection === 'about') {
+      // Look for "Name <deck name>"
+      var nameMatch = line.match(/^Name\s+(.+)$/i);
+      if (nameMatch) {
+        result.name = nameMatch[1].trim();
+      }
+    } else if (currentSection === 'sideboard') {
+      var parsed = parseDeckLine(line);
+      if (parsed) result.sideboard.push(parsed);
+    } else if (currentSection === 'commander') {
+      var parsed = parseDeckLine(line);
+      if (parsed) result.commander.push(parsed);
+    } else {
+      // Default to deck (including lines before any section header)
+      var parsed = parseDeckLine(line);
+      if (parsed) result.deck.push(parsed);
+    }
+  }
+
+  return result;
+}
+
+function toggleDeckBatchImport() {
+  var area = document.getElementById('deck-batch-import-area');
+  if (area) {
+    area.style.display = area.style.display === 'none' ? 'block' : 'none';
+    if (area.style.display === 'block') {
+      var ta = document.getElementById('deck-batch-import-text');
+      if (ta) ta.focus();
+    }
+  }
+}
+
 async function batchImportToCurrentDeck() {
   if (!_currentDeckDetail) return;
   var text = document.getElementById('deck-batch-import-text').value.trim();
   if (!text) { showToast('请输入卡牌列表', 'error'); return; }
-  var lines = text.split('\n').filter(function(l) { return l.trim(); });
-  var cardEntries = lines.map(parseDeckLine).filter(Boolean);
-  if (cardEntries.length === 0) { showToast('没有解析到任何卡牌', 'error'); return; }
+
+  // Parse structured text with sections
+  var parsed = parseDeckText(text);
+  var totalEntries = parsed.deck.length + parsed.sideboard.length + parsed.commander.length;
+  if (totalEntries === 0) { showToast('没有解析到任何卡牌', 'error'); return; }
+
+  // Update deck name if parsed
+  if (parsed.name) {
+    _currentDeckDetail.name = parsed.name;
+  }
 
   // Show progress bar
   var btn = document.querySelector('[onclick="batchImportToCurrentDeck()"]');
@@ -3180,18 +3618,24 @@ async function batchImportToCurrentDeck() {
   var added = 0, skipped4 = 0, allFailed = [];
   var BATCH_SIZE = 10;
 
-  for (var i = 0; i < cardEntries.length; i += BATCH_SIZE) {
-    var chunk = cardEntries.slice(i, i + BATCH_SIZE);
-    var pct = Math.round(((i + chunk.length) / cardEntries.length) * 100);
+  // Combine all entries with zone tags for batch processing
+  var allEntries = [];
+  parsed.deck.forEach(function(e) { allEntries.push({ entry: e, zone: 'main' }); });
+  parsed.sideboard.forEach(function(e) { allEntries.push({ entry: e, zone: 'sideboard' }); });
+  parsed.commander.forEach(function(e) { allEntries.push({ entry: e, zone: 'commander' }); });
+
+  for (var i = 0; i < allEntries.length; i += BATCH_SIZE) {
+    var chunk = allEntries.slice(i, i + BATCH_SIZE);
+    var pct = Math.round(((i + chunk.length) / allEntries.length) * 100);
     var bar = document.getElementById('deck-progress-bar');
     var txt = document.getElementById('deck-progress-text');
     if (bar) bar.style.width = pct + '%';
-    if (txt) txt.textContent = '导入中... ' + Math.min(i + chunk.length, cardEntries.length) + '/' + cardEntries.length + ' (' + pct + '%)';
+    if (txt) txt.textContent = '导入中... ' + Math.min(i + chunk.length, allEntries.length) + '/' + allEntries.length + ' (' + pct + '%)';
 
     // Build unique names for this chunk
     var names = [];
     for (var j = 0; j < chunk.length; j++) {
-      if (names.indexOf(chunk[j].name) === -1) names.push(chunk[j].name);
+      if (names.indexOf(chunk[j].entry.name) === -1) names.push(chunk[j].entry.name);
     }
 
     try {
@@ -3207,17 +3651,32 @@ async function batchImportToCurrentDeck() {
         allFailed = allFailed.concat(res.failed);
       }
       for (var j = 0; j < chunk.length; j++) {
-        var entry = chunk[j];
+        var item = chunk[j];
+        var entry = item.entry;
+        var zone = item.zone;
         var card = cardMap[entry.name.toLowerCase()];
         if (!card) continue;
+
+        // Determine target array
+        var targetArr;
+        if (zone === 'sideboard') {
+          targetArr = _currentDeckDetail.sideboard;
+        } else if (zone === 'commander') {
+          if (!_currentDeckDetail.outside_game) _currentDeckDetail.outside_game = [];
+          targetArr = _currentDeckDetail.outside_game;
+        } else {
+          targetArr = _currentDeckDetail.main_deck;
+        }
+
         for (var n = 0; n < entry.count; n++) {
-          if (!isBasicLand(card)) {
+          // 4-copy limit only applies to main deck (not basic lands)
+          if (zone === 'main' && !isBasicLand(card)) {
             var curCount = countCardCopies(_currentDeckDetail.main_deck, card.name);
             if (curCount >= 4) { skipped4++; continue; }
           }
           var newCard = Object.assign({}, card);
           newCard.id = newCard.id + '_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4) + '_' + n;
-          _currentDeckDetail.main_deck.push(newCard);
+          targetArr.push(newCard);
           added++;
         }
       }
@@ -3244,8 +3703,12 @@ async function batchImportToCurrentDeck() {
   }
 
   var msg = '导入完成: 成功 ' + added + ' 张';
+  if (parsed.deck.length > 0) msg += ', 主牌 ' + parsed.deck.length + ' 种';
+  if (parsed.sideboard.length > 0) msg += ', 备牌 ' + parsed.sideboard.length + ' 种';
+  if (parsed.commander.length > 0) msg += ', 指挥官 ' + parsed.commander.length + ' 种';
   if (skipped4 > 0) msg += ', 跳过 ' + skipped4 + ' 张(超过4张上限)';
   if (allFailed.length > 0) msg += ', 失败 ' + allFailed.length + ' 种';
+  if (parsed.name) msg += ', 牌组名: ' + parsed.name;
   showToast(msg);
   // Remove progress bar and re-enable button
   var prog = document.getElementById('deck-import-progress');
@@ -3428,12 +3891,13 @@ async function searchDeckBuilderCards() {
   if (!q) { resultsEl.innerHTML = ''; return; }
   try {
     var results = await api('/api/cards/search?q=' + encodeURIComponent(q));
-    if (!results || results.length === 0) {
+    var cards = results.cards || [];
+    if (cards.length === 0) {
       resultsEl.innerHTML = '<span class="text-muted" style="padding:8px">未找到卡牌</span>';
       return;
     }
     resultsEl.innerHTML = '';
-    (results || []).forEach(function(card) {
+    cards.forEach(function(card) {
       var el = createCardElement(card, function() {
         // Click to add to main deck column (CMC-based)
         var cols = _getColumns();
@@ -3884,20 +4348,30 @@ async function renderBattles(el) {
         <button class="btn btn-primary" onclick="showCreateBattleModal()">创建对战</button>
       </div>
       <div class="card-grid">
-        ${battles.map(b => `
+        ${battles.map(b => {
+          var battleTypeLabel = b.battle_type === 'multiplayer' ? '多人' : '1v1';
+          var deckTypeLabel = b.deck_type === 'commander' ? '指挥官' : '普通';
+          var formatTypeLabel = b.format_type === 'limited' ? '限制赛' : '普通';
+          var playerCountLabel = b.battle_type === 'multiplayer' && b.player_count ? ' · ' + b.player_count + '人' : '';
+          return `
           <div class="card-item" onclick="navigate('battle-detail', {id:${b.id}})">
             <h3>${b.name || '对战 #' + b.id}</h3>
             <span class="badge badge-${b.status === 'waiting' ? 'waiting' : b.status === 'in_progress' ? 'progress' : 'completed'}">
               ${b.status === 'waiting' ? '等待中' : b.status === 'in_progress' ? '进行中' : '已完成'}
             </span>
-            <div class="card-meta">
+            <div class="card-meta" style="margin-top:6px;flex-wrap:wrap;gap:4px">
+              <span class="deck-tag" style="background:rgba(78,168,222,0.15);color:#4ea8de;border:1px solid rgba(78,168,222,0.3)">${battleTypeLabel}${playerCountLabel}</span>
+              <span class="deck-tag" style="background:rgba(212,175,55,0.15);color:#d4af37;border:1px solid rgba(212,175,55,0.3)">${deckTypeLabel}</span>
+              <span class="deck-tag" style="background:rgba(122,130,153,0.15);color:#8a8a9a;border:1px solid rgba(122,130,153,0.3)">${formatTypeLabel}</span>
+            </div>
+            <div class="card-meta" style="margin-top:6px">
               <span>${b.player1_name || '等待中'}</span>
               <span>vs</span>
               <span>${b.player2_name || '等待中'}</span>
             </div>
             ${b.winner_id ? `<div class="text-muted" style="font-size:0.8rem;margin-top:4px">胜者: ${b.winner_id === b.player1_id ? b.player1_name : b.player2_name}</div>` : ''}
-          </div>
-        `).join('') || '<div class="empty-state"><h3>暂无对战</h3><p>点击"创建对战"开始</p></div>'}
+          </div>`;
+        }).join('') || '<div class="empty-state"><h3>暂无对战</h3><p>点击"创建对战"开始</p></div>'}
       </div>
     `;
   } catch (err) {
@@ -3907,20 +4381,79 @@ async function renderBattles(el) {
 
 async function showCreateBattleModal() {
   try {
-    const decks = await api('/api/decks');
-    if (decks.length === 0) { showToast('请先创建一个牌组', 'error'); return; }
-    showModal('创建对战', `
-      <form onsubmit="handleCreateBattle(event)">
-        <div class="form-group"><label>对战名称</label><input type="text" id="battle-name" placeholder="我的对战" value="${state.user?.username || ''}的对战"></div>
-        <div class="form-group">
-          <label>选择牌组</label>
-          <select id="battle-deck" required>
-            ${decks.map(d => `<option value="${d.id}">${d.name} (${Array.isArray(d.main_deck) ? d.main_deck.length : 0}张)</option>`).join('')}
-          </select>
-        </div>
-        <button type="submit" class="btn btn-primary btn-block">创建</button>
-      </form>
-    `);
+    const allDecks = await api('/api/decks');
+    if (allDecks.length === 0) { showToast('请先创建一个牌组', 'error'); return; }
+
+    var modalState = { battleType: '1v1', deckType: 'normal', formatType: 'normal' };
+
+    function filterDecks() {
+      return allDecks.filter(function(d) {
+        var isLimited = !!d.event_id;
+        var isCommander = d.type === 'commander';
+        if (modalState.deckType === 'commander' && !isCommander) return false;
+        if (modalState.deckType === 'normal' && isCommander) return false;
+        if (modalState.formatType === 'limited' && !isLimited) return false;
+        if (modalState.formatType === 'normal' && isLimited) return false;
+        return true;
+      });
+    }
+
+    function renderModal() {
+      var bt = modalState.battleType;
+      var dt = modalState.deckType;
+      var ft = modalState.formatType;
+      var filtered = filterDecks();
+      var deckOptions = filtered.map(function(d) {
+        var count = Array.isArray(d.main_deck) ? d.main_deck.length : 0;
+        return '<option value="' + d.id + '">' + escapeHtml(d.name) + ' (' + count + '张)</option>';
+      }).join('');
+      if (filtered.length === 0) {
+        deckOptions = '<option value="" disabled selected>无符合条件的牌组</option>';
+      }
+      var playerCountHtml = bt === 'multiplayer'
+        ? '<div class="form-group"><label>对战人数</label><input type="number" id="battle-player-count" min="3" max="8" value="3" style="width:100%"></div>'
+        : '';
+
+      showModal('创建对战',
+        '<form onsubmit="handleCreateBattle(event)">' +
+        '<div class="form-group"><label>对战名称</label><input type="text" id="battle-name" placeholder="我的对战" value="' + escapeHtml(state.user?.username || '') + '的对战"></div>' +
+        '<div class="form-group"><label>对战模式</label>' +
+          '<div class="tab-switcher">' +
+            '<button type="button" class="tab-option' + (bt === '1v1' ? ' active' : '') + '" onclick="window._setBattleTab(\'battleType\',\'1v1\')">1v1 对战</button>' +
+            '<button type="button" class="tab-option' + (bt === 'multiplayer' ? ' active' : '') + '" onclick="window._setBattleTab(\'battleType\',\'multiplayer\')">多人对战</button>' +
+          '</div>' +
+        '</div>' +
+        playerCountHtml +
+        '<div class="form-group"><label>牌组类型</label>' +
+          '<div class="tab-switcher">' +
+            '<button type="button" class="tab-option' + (dt === 'normal' ? ' active' : '') + '" onclick="window._setBattleTab(\'deckType\',\'normal\')">普通牌组</button>' +
+            '<button type="button" class="tab-option' + (dt === 'commander' ? ' active' : '') + '" onclick="window._setBattleTab(\'deckType\',\'commander\')">指挥官牌组</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="form-group"><label>对战格式</label>' +
+          '<div class="tab-switcher">' +
+            '<button type="button" class="tab-option' + (ft === 'normal' ? ' active' : '') + '" onclick="window._setBattleTab(\'formatType\',\'normal\')">普通对战</button>' +
+            '<button type="button" class="tab-option' + (ft === 'limited' ? ' active' : '') + '" onclick="window._setBattleTab(\'formatType\',\'limited\')">限制赛对战</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="form-group"><label>选择牌组</label>' +
+          '<select id="battle-deck" required>' + deckOptions + '</select>' +
+          (filtered.length === 0 ? '<div style="font-size:0.8rem;color:var(--text-muted);margin-top:4px">当前没有符合条件的牌组，请先创建对应类型的牌组</div>' : '') +
+        '</div>' +
+        '<input type="hidden" id="battle-type" value="' + bt + '">' +
+        '<input type="hidden" id="battle-deck-type" value="' + dt + '">' +
+        '<input type="hidden" id="battle-format-type" value="' + ft + '">' +
+        '<button type="submit" class="btn btn-primary btn-block"' + (filtered.length === 0 ? ' disabled' : '') + '>创建</button>' +
+        '</form>'
+      );
+    }
+
+    window._setBattleTab = function(key, val) {
+      modalState[key] = val;
+      renderModal();
+    };
+
+    renderModal();
   } catch (err) { showToast(err.message, 'error'); }
 }
 
@@ -3929,8 +4462,13 @@ async function handleCreateBattle(e) {
   const name = document.getElementById('battle-name').value.trim();
   const deck_id = parseInt(document.getElementById('battle-deck').value);
   if (!deck_id) { showToast('请选择一个牌组', 'error'); return; }
+  const battle_type = document.getElementById('battle-type').value;
+  const deck_type = document.getElementById('battle-deck-type').value;
+  const format_type = document.getElementById('battle-format-type').value;
+  const playerCountEl = document.getElementById('battle-player-count');
+  const player_count = playerCountEl ? parseInt(playerCountEl.value) : 2;
   try {
-    const battle = await api('/api/battles', { method: 'POST', body: JSON.stringify({ deck_id, name }) });
+    const battle = await api('/api/battles', { method: 'POST', body: JSON.stringify({ deck_id, name, battle_type, deck_type, format_type, player_count }) });
     closeModal();
     showToast('对战已创建，等待对手加入');
     window.open(`/battle.html?id=${battle.id}`, '_blank');
@@ -3990,13 +4528,25 @@ function renderBattleCompleted(el, battle, id) {
 
 async function joinBattle(battleId) {
   try {
-    const decks = await api('/api/decks');
-    if (decks.length === 0) { showToast('请先创建一个牌组', 'error'); return; }
+    const battle = await api('/api/battles/' + battleId);
+    const allDecks = await api('/api/decks');
+    var filtered = allDecks.filter(function(d) {
+      var isLimited = !!d.event_id;
+      var isCommander = d.type === 'commander';
+      var bDeckType = battle.deck_type || 'normal';
+      var bFormatType = battle.format_type || 'normal';
+      if (bDeckType === 'commander' && !isCommander) return false;
+      if (bDeckType === 'normal' && isCommander) return false;
+      if (bFormatType === 'limited' && !isLimited) return false;
+      if (bFormatType === 'normal' && isLimited) return false;
+      return true;
+    });
+    if (filtered.length === 0) { showToast('没有符合该对战要求的牌组', 'error'); return; }
     showModal('加入对战',
       '<form onsubmit="handleJoinBattle(event,' + battleId + ')">' +
       '<div class="form-group"><label>选择牌组</label>' +
       '<select id="join-battle-deck" required>' +
-      decks.map(function(d) { return '<option value="' + d.id + '">' + escapeHtml(d.name) + ' (' + (Array.isArray(d.main_deck) ? d.main_deck.length : 0) + '张)</option>'; }).join('') +
+      filtered.map(function(d) { return '<option value="' + d.id + '">' + escapeHtml(d.name) + ' (' + (Array.isArray(d.main_deck) ? d.main_deck.length : 0) + '张)</option>'; }).join('') +
       '</select></div>' +
       '<button type="submit" class="btn btn-success btn-block">加入</button>' +
       '</form>'
@@ -4034,6 +4584,10 @@ function renderBattleLobby(el, battle, id) {
   const isP1 = String(battle.player1_id) === String(state.user?.id);
   const canJoin = !isP1 && battle.player2_id == null && state.user?.id != null;
   const canStart = isP1 && battle.player2_id != null;
+  var battleTypeLabel = battle.battle_type === 'multiplayer' ? '多人对战' : '1v1 对战';
+  var deckTypeLabel = battle.deck_type === 'commander' ? '指挥官牌组' : '普通牌组';
+  var formatTypeLabel = battle.format_type === 'limited' ? '限制赛' : '普通';
+  var playerCountInfo = battle.battle_type === 'multiplayer' && battle.player_count ? ' · ' + battle.player_count + '人' : '';
   el.innerHTML = `
     <div class="page-header">
       <button class="btn btn-secondary btn-sm" onclick="navigate('battles')">← 返回</button>
@@ -4042,6 +4596,11 @@ function renderBattleLobby(el, battle, id) {
     <div class="empty-state">
       <h3>${battle.player2_id ? '双方已就位' : '等待对手加入'}</h3>
       <p>${escapeHtml(battle.player1_name || '玩家1')} vs ${battle.player2_id ? escapeHtml(battle.player2_name || '玩家2') : '???'}</p>
+      <div style="margin-top:12px;display:flex;gap:6px;justify-content:center;flex-wrap:wrap">
+        <span class="deck-tag" style="background:rgba(78,168,222,0.15);color:#4ea8de;border:1px solid rgba(78,168,222,0.3)">${battleTypeLabel}${playerCountInfo}</span>
+        <span class="deck-tag" style="background:rgba(212,175,55,0.15);color:#d4af37;border:1px solid rgba(212,175,55,0.3)">${deckTypeLabel}</span>
+        <span class="deck-tag" style="background:rgba(122,130,153,0.15);color:#8a8a9a;border:1px solid rgba(122,130,153,0.3)">${formatTypeLabel}</span>
+      </div>
       ${canJoin ? `<button class="btn btn-success" style="margin-top:16px" onclick="joinBattle(${id})">加入对战</button>` : ''}
       ${canStart ? `<button class="btn btn-warning" style="margin-top:16px" onclick="startBattle(${id})">开始对战</button>` : ''}
       ${!canJoin && !canStart ? '<p class="text-muted" style="margin-top:12px">等待其他玩家操作...</p>' : ''}
