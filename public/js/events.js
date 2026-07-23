@@ -1271,15 +1271,30 @@ function renderDraftColumns() {
   var cols = _getColumns();
   if (!scrollEl || !cols) return;
 
-  // Calculate dimensions
-  var maxCards = 0;
+  // Pre-compute name groups per column — rendering stacks one element per group,
+  // so overlap must be based on group count, not raw card count
+  var columnGroups = {};
+  var maxGroups = 0;
   _draftColumnKeys.forEach(function(k) {
-    var len = (cols[k] || []).length;
-    if (len > maxCards) maxCards = len;
+    var cards = cols[k] || [];
+    var groups = [];
+    var groupMap = {};
+    cards.forEach(function(card) {
+      var nameKey = card.name || String(card.id);
+      if (!groupMap[nameKey]) {
+        groupMap[nameKey] = [];
+        groups.push({ name: nameKey, cards: groupMap[nameKey] });
+      }
+      groupMap[nameKey].push(card);
+    });
+    columnGroups[k] = groups;
+    if (groups.length > maxGroups) maxGroups = groups.length;
   });
+
+  // Calculate dimensions — actual card width excludes column body padding (8px each side)
   var colCount = _draftColumnKeys.length || 9;
   var colWidth = Math.max(110, scrollEl.clientWidth / colCount);
-  var cardH = colWidth * 7 / 5;
+  var cardH = Math.max(60, (colWidth - 16) * 7 / 5);
 
   // Calculate overlap based on viewport constraint
   var rect = scrollEl.getBoundingClientRect();
@@ -1287,10 +1302,11 @@ function renderDraftColumns() {
   var headerH = 36;
   var bodyH = viewportAvail - headerH;
   var cardOverlap = 0;
-  if (maxCards > 1) {
-    var fitOverlap = (cardH * maxCards - bodyH) / (maxCards - 1);
+  if (maxGroups > 1) {
+    var fitOverlap = (cardH * maxGroups - bodyH) / (maxGroups - 1);
     cardOverlap = Math.max(0, fitOverlap);
-    cardOverlap = Math.min(cardOverlap, cardH * 0.9);
+    // Keep at least 20% of each card visible
+    cardOverlap = Math.min(cardOverlap, cardH * 0.8);
   }
 
   scrollEl.innerHTML = '';
@@ -1315,17 +1331,7 @@ function renderDraftColumns() {
     if (cards.length === 0) {
       body.innerHTML = '<div class="draft-column-empty">拖拽卡牌到此列</div>';
     } else {
-      // Group cards by name within this column
-      var groups = [];
-      var groupMap = {};
-      cards.forEach(function(card) {
-        var nameKey = card.name || String(card.id);
-        if (!groupMap[nameKey]) {
-          groupMap[nameKey] = [];
-          groups.push({ name: nameKey, cards: groupMap[nameKey] });
-        }
-        groupMap[nameKey].push(card);
-      });
+      var groups = columnGroups[key] || [];
 
       groups.forEach(function(group, groupIdx) {
         var card = group.cards[0]; // representative card for display

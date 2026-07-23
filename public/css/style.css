@@ -4122,6 +4122,8 @@ body.draft-fullscreen #content > .page-header {
   gap: 0;
   padding: 0;
   background: var(--bg-darkest);
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 .draft-columns-scroll::-webkit-scrollbar { height: 6px; }
 .draft-columns-scroll::-webkit-scrollbar-track { background: var(--bg-darkest); }
@@ -4206,6 +4208,8 @@ body.draft-fullscreen #content > .page-header {
   position: relative;
   min-height: 40px;
   padding: 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 .draft-column-body::-webkit-scrollbar { width: 4px; }
 .draft-column-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
@@ -4260,7 +4264,7 @@ body.draft-fullscreen #content > .page-header {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 100%;
+  flex: 1;
   min-height: 60px;
   color: var(--text-dim);
   font-size: 0.7rem;
