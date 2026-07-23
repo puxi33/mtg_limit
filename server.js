@@ -612,6 +612,7 @@ ensureColumn('battles', 'deck_type', "deck_type TEXT DEFAULT 'normal'");
 ensureColumn('battles', 'format_type', "format_type TEXT DEFAULT 'normal'");
 ensureColumn('battles', 'player_count', "player_count INTEGER DEFAULT 2");
 ensureColumn('decks', 'outside_game', "outside_game TEXT DEFAULT '[]'");
+ensureColumn('decks', 'column_keys', "column_keys TEXT DEFAULT '[]'");
 
 // Ensure battle_players table exists (for existing databases)
 try {
@@ -2181,7 +2182,7 @@ app.get('/api/decks', authMiddleware, (req, res) => {
   const result = decks.map(d => {
     const deck = {
       ...d, main_deck: JSON.parse(d.main_deck || '[]'), sideboard: JSON.parse(d.sideboard || '[]'),
-      outside_game: JSON.parse(d.outside_game || '[]')
+      outside_game: JSON.parse(d.outside_game || '[]'), column_keys: JSON.parse(d.column_keys || '[]')
     };
     deck.type = getDeckType(deck);
     return deck;
@@ -2200,6 +2201,7 @@ app.get('/api/events/:id/my-deck', authMiddleware, (req, res) => {
   deck.main_deck = JSON.parse(deck.main_deck || '[]');
   deck.sideboard = JSON.parse(deck.sideboard || '[]');
   deck.outside_game = JSON.parse(deck.outside_game || '[]');
+  deck.column_keys = JSON.parse(deck.column_keys || '[]');
   res.json(deck);
 });
 
@@ -2214,15 +2216,16 @@ function getDeckType(deck) {
 
 app.post('/api/decks', authMiddleware, (req, res) => {
   try {
-    const { name, main_deck, sideboard, outside_game, event_id } = req.body;
+    const { name, main_deck, sideboard, outside_game, event_id, column_keys } = req.body;
     if (!name) return res.status(400).json({ error: '牌组名称不能为空' });
-    const result = db.prepare('INSERT INTO decks (user_id, name, main_deck, sideboard, outside_game, event_id) VALUES (?, ?, ?, ?, ?, ?)').run(
-      req.user.id, name, JSON.stringify(main_deck || []), JSON.stringify(sideboard || []), JSON.stringify(outside_game || []), event_id || null
+    const result = db.prepare('INSERT INTO decks (user_id, name, main_deck, sideboard, outside_game, event_id, column_keys) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+      req.user.id, name, JSON.stringify(main_deck || []), JSON.stringify(sideboard || []), JSON.stringify(outside_game || []), event_id || null, JSON.stringify(column_keys || [])
     );
     const deck = db.prepare('SELECT * FROM decks WHERE id = ?').get(result.lastInsertRowid);
     deck.main_deck = JSON.parse(deck.main_deck);
     deck.sideboard = JSON.parse(deck.sideboard);
     deck.outside_game = JSON.parse(deck.outside_game || '[]');
+    deck.column_keys = JSON.parse(deck.column_keys || '[]');
     deck.type = getDeckType(deck);
     res.json(deck);
   } catch (err) {
@@ -2238,6 +2241,7 @@ app.get('/api/decks/:id', authMiddleware, (req, res) => {
   deck.main_deck = JSON.parse(deck.main_deck);
   deck.sideboard = JSON.parse(deck.sideboard);
   deck.outside_game = JSON.parse(deck.outside_game || '[]');
+  deck.column_keys = JSON.parse(deck.column_keys || '[]');
   deck.type = getDeckType(deck);
   res.json(deck);
 });
@@ -2248,18 +2252,20 @@ app.put('/api/decks/:id', authMiddleware, (req, res) => {
       ? db.prepare('SELECT * FROM decks WHERE id = ?').get(req.params.id)
       : db.prepare('SELECT * FROM decks WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
     if (!deck) return res.status(404).json({ error: '牌组不存在' });
-    const { name, main_deck, sideboard, outside_game } = req.body;
-    db.prepare('UPDATE decks SET name = ?, main_deck = ?, sideboard = ?, outside_game = ? WHERE id = ?').run(
+    const { name, main_deck, sideboard, outside_game, column_keys } = req.body;
+    db.prepare('UPDATE decks SET name = ?, main_deck = ?, sideboard = ?, outside_game = ?, column_keys = ? WHERE id = ?').run(
       name || deck.name,
       main_deck ? JSON.stringify(main_deck) : deck.main_deck,
       sideboard ? JSON.stringify(sideboard) : deck.sideboard,
       outside_game ? JSON.stringify(outside_game) : (deck.outside_game || '[]'),
+      column_keys ? JSON.stringify(column_keys) : (deck.column_keys || '[]'),
       deck.id
     );
     const updated = db.prepare('SELECT * FROM decks WHERE id = ?').get(deck.id);
     updated.main_deck = JSON.parse(updated.main_deck);
     updated.sideboard = JSON.parse(updated.sideboard);
     updated.outside_game = JSON.parse(updated.outside_game || '[]');
+    updated.column_keys = JSON.parse(updated.column_keys || '[]');
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3168,7 +3174,7 @@ function processGameAction(gs, userId, action) {
 
   switch (action.type) {
     case 'move_card': {
-      const { card_id, from_zone, to_zone } = action;
+      const { card_id, from_zone, to_zone, library_position } = action;
       if (!card_id || !from_zone || !to_zone) return { error: '缺少移动参数' };
       const validZones = ['hand', 'battlefield', 'graveyard', 'exile', 'library', 'outside_game'];
       if (!validZones.includes(from_zone) || !validZones.includes(to_zone)) return { error: '无效的区域' };
@@ -3204,13 +3210,19 @@ function processGameAction(gs, userId, action) {
         return { success: true };
       }
       if (to_zone === 'battlefield') { card.tapped = false; card.damage_marked = 0; card.counters = {}; }
-      // Library: put on top (unshift = index 0 = drawn first). Other zones: push to end.
+      // Library: put at specified position (1=top, 2=second, etc.) or default to top
       if (to_zone === 'library') {
-        me[to_zone].unshift(card);
+        const pos = parseInt(library_position);
+        if (pos && pos > 0) {
+          me[to_zone].splice(pos - 1, 0, card);
+        } else {
+          me[to_zone].unshift(card);
+        }
       } else {
         me[to_zone].push(card);
       }
-      gs.log.push(me.name + ' 将 ' + card.name + ' 从' + from_zone + '移至' + to_zone);
+      const posLabel = to_zone === 'library' && library_position ? '(牌库顶第' + library_position + '张)' : '';
+      gs.log.push(me.name + ' 将 ' + card.name + ' 从' + from_zone + '移至' + to_zone + posLabel);
       return { success: true };
     }
     case 'tap_card': {

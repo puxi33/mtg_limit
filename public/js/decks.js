@@ -1197,22 +1197,34 @@ async function renderDeckBuilder(el, params) {
 
     // Switch to deck column mode
     _columnMode = 'deck';
-    // Check if we have draft columns from a just-completed draft
-    if (_draftColumns && Object.keys(_draftColumns).length > 0) {
+    if (existingDeck && existingDeck.column_keys && existingDeck.column_keys.length > 0) {
+      _draftColumnKeys = existingDeck.column_keys.slice();
+      existingDeck.column_keys.forEach(function(k) {
+        if (k.indexOf('custom_') === 0 && !_draftColumnNames[k]) {
+          var num = parseInt(k.replace('custom_', ''));
+          _draftColumnNames[k] = '分组 ' + num;
+          if (num > _customColumnCounter) _customColumnCounter = num;
+        }
+      });
+    } else if (!existingDeck) {
+      _resetColumnKeysToBase();
+    }
+    if (existingDeck) {
+      // Editing existing deck: always load from server data, never use stale _draftColumns
+      if (!_loadDeckColumns()) {
+        if (eventId) {
+          initDeckColumns(pool, mainDeck, outsideGame, existingDeck.sideboard || []);
+        } else {
+          initDeckColumns([], mainDeck, outsideGame, pool);
+        }
+      }
+    } else if (_draftColumns && Object.keys(_draftColumns).length > 0) {
+      // Fresh deck from just-completed draft
       window._deckColumns = JSON.parse(JSON.stringify(_draftColumns));
       window._deckManualPlacements = JSON.parse(JSON.stringify(_manualPlacements || {}));
       _saveDeckColumns();
     } else if (!_loadDeckColumns()) {
-      if (eventId && existingDeck) {
-        // Event deck editing: pool = remaining event pool, sideboard = existing deck sideboard
-        initDeckColumns(pool, mainDeck, outsideGame, existingDeck.sideboard || []);
-      } else if (!eventId && existingDeck) {
-        // Custom deck editing: pool is actually the sideboard
-        initDeckColumns([], mainDeck, outsideGame, pool);
-      } else {
-        // Fresh deck building (no existing deck)
-        initDeckColumns(pool, [], [], []);
-      }
+      initDeckColumns(pool, [], [], []);
     }
 
     // Determine back button target and save button
@@ -1225,9 +1237,9 @@ async function renderDeckBuilder(el, params) {
       : `saveDeck(${existingDeck ? existingDeck.id : 'null'}, ${eventId || 'null'})`;
     var title = betweenGames ? '调整牌组 (局间)' : (existingDeck ? '编辑牌组' : '构建牌组');
 
-    // Total card count
+    // Total card count (main deck + outside game, excluding sideboard)
     var totalCards = 0;
-    _draftColumnKeys.forEach(function(k) { totalCards += (window._deckColumns[k] || []).length; });
+    _draftColumnKeys.forEach(function(k) { if (k !== 'Sideboard') totalCards += (window._deckColumns[k] || []).length; });
 
     el.innerHTML = `
       <div class="page-header">
@@ -1626,15 +1638,21 @@ function getDeckDataFromColumns() {
   var sideboard = [];
   var outsideGame = [];
   _draftColumnKeys.forEach(function(k) {
+    var cards = (cols[k] || []).map(function(c) {
+      var tagged = Object.assign({}, c);
+      tagged._column = k;
+      return tagged;
+    });
     if (k === 'Sideboard') {
-      sideboard = sideboard.concat(cols[k] || []);
+      sideboard = sideboard.concat(cards);
     } else if (k === 'Outside') {
-      outsideGame = outsideGame.concat(cols[k] || []);
+      outsideGame = outsideGame.concat(cards);
     } else {
-      mainDeck = mainDeck.concat(cols[k] || []);
+      mainDeck = mainDeck.concat(cards);
     }
   });
-  return { main_deck: mainDeck, sideboard: sideboard, outside_game: outsideGame };
+  var customKeys = _draftColumnKeys.filter(function(k) { return k.indexOf('custom_') === 0; });
+  return { main_deck: mainDeck, sideboard: sideboard, outside_game: outsideGame, column_keys: customKeys.length > 0 ? _draftColumnKeys.slice() : [] };
 }
 
 async function saveDeck(deckId, eventId) {

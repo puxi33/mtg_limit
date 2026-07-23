@@ -405,6 +405,26 @@ function showContextMenu(e, cardId, card, playerKey, battleId) {
     addItem('移除衍生物', 'remove_token', null, null);
   }
 
+  // Put on library at position X
+  addSeparator();
+  (function() {
+    var div = document.createElement('div');
+    div.className = 'ctx-menu-item';
+    var span = document.createElement('span');
+    span.textContent = '\u{1F4DA} 放到牌库顶...';
+    div.appendChild(span);
+    div.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      hideContextMenu();
+      var input = prompt('放到牌库顶第几张？（1 = 最顶部）', '1');
+      if (input === null) return;
+      var pos = parseInt(input);
+      if (!pos || pos < 1) { showToast('请输入有效的位置数字', 'error'); return; }
+      mtgaAction(battleId, { type: 'move_card', card_id: cardId, from_zone: 'battlefield', to_zone: 'library', library_position: pos });
+    });
+    menu.appendChild(div);
+  })();
+
   document.body.appendChild(menu);
 
   // Position menu at cursor, keep within viewport

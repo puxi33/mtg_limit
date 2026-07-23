@@ -231,6 +231,7 @@ async function renderEventDetail(el, id) {
   window._lastPoolSize = null;
   window._autoDeckInProgress = false;
   _columnMode = 'draft';
+  _resetColumnKeysToBase();
   // Note: preserve _draftColumns, _manualPlacements, and localStorage data
   // so the deck builder can use draft grouping info after draft completion
 
@@ -366,38 +367,6 @@ async function renderEventDetail(el, id) {
         </div>
       </div>
 
-      ${isParticipant && (isMyTurnToPick || (event.status === 'in_progress' && myParticipation.pool && myParticipation.pool.length > 0)) ? `
-        <div class="draft-redesign" id="draft-redesign">
-          <div class="draft-pick-strip" id="draft-pick-strip">
-            <div class="draft-pick-strip-header" ${!isMyTurnToPick ? 'style="display:none"' : ''}>
-              <h3>${event.type === 'draft' ? '轮抓选牌' : '牌池'}</h3>
-              <div id="draft-confirm-bar" class="hidden" style="display:flex;align-items:center;gap:10px">
-                <span id="draft-selected-count" style="font-size:0.85rem;color:var(--text-muted)">已选: 0 / ${cardsPerPick}</span>
-                <button class="btn btn-primary btn-sm" id="draft-confirm-btn" onclick="confirmDraftPick(${id})" disabled>确认选择</button>
-              </div>
-            </div>
-            <div id="draft-cards-container" class="draft-pick-scroll" ${!isMyTurnToPick ? 'style="display:none"' : ''}></div>
-            ${!isMyTurnToPick ? '<div class="draft-waiting-msg" style="text-align:center;padding:20px 16px;color:var(--warning);font-weight:600;font-size:0.9rem">等待其他玩家选牌...<div class="text-muted" style="font-weight:400;font-size:0.8rem;margin-top:4px">页面会自动刷新</div></div>' : ''}
-          </div>
-          <div class="draft-columns-area" id="draft-columns-area">
-            <div class="draft-columns-header">
-              <span style="color:var(--text-bright);font-size:0.85rem;font-weight:600">已抓到的牌 <span class="text-muted" id="draft-pool-count" style="font-weight:400">${myParticipation.pool ? myParticipation.pool.length : 0}张</span></span>
-            </div>
-            <div class="draft-columns-scroll" id="draft-columns-scroll"></div>
-          </div>
-        </div>
-      ` : isParticipant && event.status === 'completed' && myParticipation.pool && myParticipation.pool.length > 0 ? `
-        <div class="draft-redesign" id="draft-redesign">
-          <div class="draft-complete-banner" id="draft-complete-banner">轮抓已结束 — 正在自动创建牌组...</div>
-          <div class="draft-columns-area" id="draft-columns-area">
-            <div class="draft-columns-header">
-              <span style="color:var(--text-bright);font-size:0.85rem;font-weight:600">已抓到的牌 <span class="text-muted" style="font-weight:400">${myParticipation.pool.length}张</span></span>
-            </div>
-            <div class="draft-columns-scroll" id="draft-columns-scroll"></div>
-          </div>
-        </div>
-      ` : ''}
-
       <!-- Deck & Battle Section -->
       ${canBuildDeck ? `
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px">
@@ -479,11 +448,18 @@ async function renderEventDetail(el, id) {
         ` : ''}
       ` : ''}
 
-      <!-- Deck Overview -->
+      <!-- Deck Display (read-only column style, same layout as draft columns) -->
       ${myDeck && myDeck.main_deck && myDeck.main_deck.length > 0 ? `
-        <div style="margin-bottom:24px">
-          <h3 style="color:var(--text-bright);margin-bottom:12px">牌组概览 <span class="text-muted" style="font-size:0.85rem">(${myDeck.main_deck.length}张)</span></h3>
-          <div id="deck-overview-container" class="deck-cards-sm" style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px"></div>
+        <div class="draft-redesign" id="deck-overview-redesign">
+          <div class="draft-columns-area" id="deck-overview-area">
+            <div class="draft-columns-header">
+              <span style="color:var(--text-bright);font-size:0.85rem;font-weight:600">
+                牌组 <span class="text-muted" style="font-weight:400">(${myDeck.main_deck.length}张)</span>
+                ${myDeck.sideboard && myDeck.sideboard.length > 0 ? `<span class="text-muted" style="font-weight:400;margin-left:8px">| 备牌 ${myDeck.sideboard.length}张</span>` : ''}
+              </span>
+            </div>
+            <div class="draft-columns-scroll" id="deck-overview-columns"></div>
+          </div>
         </div>
       ` : ''}
 
@@ -627,8 +603,8 @@ async function renderEventDetail(el, id) {
       ` : ''}
     `;
 
-    // Full-screen mode for draft redesign
-    if (el.querySelector('#draft-redesign')) {
+    // Full-screen mode for deck overview redesign
+    if (el.querySelector('#deck-overview-redesign')) {
       document.body.classList.add('draft-fullscreen');
     }
 
@@ -640,16 +616,6 @@ async function renderEventDetail(el, id) {
       }
     }
 
-    // Initialize draft columns (lower panel)
-    if (isParticipant && myParticipation.pool && myParticipation.pool.length > 0) {
-      initDraftColumns(myParticipation.pool);
-      renderDraftColumns();
-    } else if (isParticipant && document.getElementById('draft-columns-scroll')) {
-      // Show empty columns even if no pool yet
-      initDraftColumns([]);
-      renderDraftColumns();
-    }
-
     // Auto create deck when draft is completed and no deck exists yet
 
     if (event.status === 'completed' && isParticipant && myParticipation.pool && myParticipation.pool.length > 0 && !myDeck && !window._autoDeckInProgress) {
@@ -659,43 +625,9 @@ async function renderEventDetail(el, id) {
       });
     }
 
-    // Render deck overview
+    // Render read-only deck columns
     if (myDeck && myDeck.main_deck && myDeck.main_deck.length > 0) {
-      const deckContainer = el.querySelector('#deck-overview-container');
-      if (deckContainer) {
-        const piles = groupCardsByName(myDeck.main_deck);
-        const grid = document.createElement('div');
-        grid.className = 'mtg-cards-grid';
-        grid.style.gap = '12px';
-        piles.forEach(function(pile) {
-          var pileEl = document.createElement('div');
-          pileEl.className = 'deck-card-pile';
-          pileEl.style.position = 'relative';
-          pileEl.style.width = '120px';
-          pileEl.style.height = '183px';
-          pile.cards.forEach(function(card, idx) {
-            var el2 = createCardElement(card);
-            el2.style.width = '120px';
-            el2.style.fontSize = '0.7rem';
-            el2.style.position = 'absolute';
-            el2.style.top = Math.min(idx * 3, 15) + 'px';
-            el2.style.left = Math.min(idx * 3, 15) + 'px';
-            el2.style.zIndex = idx;
-            el2.addEventListener('mouseenter', function(e) { showCardPreview(card); moveCardPreview(e); });
-            el2.addEventListener('mousemove', moveCardPreview);
-            el2.addEventListener('mouseleave', hideCardPreview);
-            pileEl.appendChild(el2);
-          });
-          if (pile.cards.length > 1) {
-            var label = document.createElement('div');
-            label.className = 'deck-pile-count';
-            label.textContent = 'x' + pile.cards.length;
-            pileEl.appendChild(label);
-          }
-          grid.appendChild(pileEl);
-        });
-        deckContainer.appendChild(grid);
-      }
+      renderReadOnlyDeckColumns('deck-overview-columns', myDeck);
     }
 
     // Start polling if event is in progress and I'm a participant
@@ -1100,8 +1032,10 @@ async function pollDraftState(eventId) {
 // DRAFT COLUMNS SYSTEM (Two-panel redesign)
 // ============================================================
 var _draftColumns = null; // { '0': [], '1': [], ..., '6+': [], Land: [], Sideboard: [], Outside: [] }
-var _draftColumnKeys = ['0', '1', '2', '3', '4', '5', '6+', 'Land', 'Sideboard', 'Outside'];
+var _baseColumnKeys = ['Outside', '0', '1', '2', '3', '4', '5', '6+', 'Land', 'Sideboard'];
+var _draftColumnKeys = _baseColumnKeys.slice();
 var _draftColumnNames = { '0': '0', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6+': '6+', 'Land': '地', 'Sideboard': '备牌', 'Outside': '游戏外' };
+var _customColumnCounter = 0;
 var _draftColumnsEventId = null; // Tracks which event the draft columns belong to
 
 // Column mode: 'draft' | 'deck' — makes the column system reusable for deck building
@@ -1125,6 +1059,39 @@ function _clearManualPlacements() {
   if (_columnMode === 'deck') { window._deckManualPlacements = {}; } else { _manualPlacements = {}; }
 }
 
+function _createCustomColumnKey() {
+  _customColumnCounter++;
+  var key = 'custom_' + _customColumnCounter;
+  _draftColumnNames[key] = '分组 ' + _customColumnCounter;
+  return key;
+}
+
+function _insertColumnKeyAt(newKey, insertBeforeKey) {
+  var idx = _draftColumnKeys.indexOf(insertBeforeKey);
+  if (idx === -1) { _draftColumnKeys.push(newKey); return; }
+  _draftColumnKeys.splice(idx, 0, newKey);
+}
+
+function _resetColumnKeysToBase() {
+  _draftColumnKeys = _baseColumnKeys.slice();
+}
+
+function _removeEmptyCustomColumns() {
+  var cols = _getColumns();
+  if (!cols) return;
+  var removed = false;
+  for (var i = _draftColumnKeys.length - 1; i >= 0; i--) {
+    var k = _draftColumnKeys[i];
+    if (k.indexOf('custom_') === 0 && (!cols[k] || cols[k].length === 0)) {
+      _draftColumnKeys.splice(i, 1);
+      delete cols[k];
+      delete _draftColumnNames[k];
+      removed = true;
+    }
+  }
+  return removed;
+}
+
 // Deck-mode storage key
 function _deckStorageKey() {
   var deckId = (state.pageData && state.pageData._deckId) || 'unknown';
@@ -1132,12 +1099,37 @@ function _deckStorageKey() {
 }
 function _saveDeckColumns() {
   if (!window._deckColumns) return;
-  try { localStorage.setItem(_deckStorageKey(), JSON.stringify(window._deckColumns)); } catch(e) {}
+  try {
+    var data = { columns: window._deckColumns, keys: _draftColumnKeys, names: {} };
+    _draftColumnKeys.forEach(function(k) {
+      if (k.indexOf('custom_') === 0) data.names[k] = _draftColumnNames[k];
+    });
+    localStorage.setItem(_deckStorageKey(), JSON.stringify(data));
+  } catch(e) {}
 }
 function _loadDeckColumns() {
   try {
     var saved = localStorage.getItem(_deckStorageKey());
-    if (saved) { window._deckColumns = JSON.parse(saved); return true; }
+    if (saved) {
+      var data = JSON.parse(saved);
+      if (data.columns) {
+        window._deckColumns = data.columns;
+        if (data.keys) _draftColumnKeys = data.keys;
+        if (data.names) {
+          Object.keys(data.names).forEach(function(k) { _draftColumnNames[k] = data.names[k]; });
+          var maxCustom = 0;
+          Object.keys(data.names).forEach(function(k) {
+            var num = parseInt(k.replace('custom_', ''));
+            if (num > maxCustom) maxCustom = num;
+          });
+          if (maxCustom > _customColumnCounter) _customColumnCounter = maxCustom;
+        }
+        return true;
+      } else {
+        window._deckColumns = data;
+        return true;
+      }
+    }
   } catch(e) {}
   return false;
 }
@@ -1145,15 +1137,19 @@ function _clearDeckColumns() {
   try { localStorage.removeItem(_deckStorageKey()); } catch(e) {}
   window._deckColumns = null;
   window._deckManualPlacements = {};
+  _resetColumnKeysToBase();
 }
 
 // Initialize deck columns from pool + main_deck + outside_game
 function initDeckColumns(pool, mainDeck, outsideGame, sideboard) {
   window._deckColumns = {};
   _draftColumnKeys.forEach(function(k) { window._deckColumns[k] = []; });
-  // Place main deck cards into CMC columns
+  var keySet = {};
+  _draftColumnKeys.forEach(function(k) { keySet[k] = true; });
+  // Place main deck cards — use _column tag if available
   (mainDeck || []).forEach(function(card) {
-    var col = getDraftCardColumn(card);
+    var col = (card._column && keySet[card._column]) ? card._column : getDraftCardColumn(card);
+    if (!window._deckColumns[col]) window._deckColumns[col] = [];
     window._deckColumns[col].push(card);
   });
   // Place outside game cards into Outside column
@@ -1167,6 +1163,7 @@ function initDeckColumns(pool, mainDeck, outsideGame, sideboard) {
   // Place pool (remaining cards not in any zone) into CMC columns
   (pool || []).forEach(function(card) {
     var col = getDraftCardColumn(card);
+    if (!window._deckColumns[col]) window._deckColumns[col] = [];
     window._deckColumns[col].push(card);
   });
   _saveDeckColumns();
@@ -1273,9 +1270,8 @@ function renderDraftColumns() {
   var scrollEl = _getScrollEl();
   var cols = _getColumns();
   if (!scrollEl || !cols) return;
-  scrollEl.innerHTML = '';
 
-  // Dynamic card overlap: adjusts so all cards fit in the tallest column
+  // Calculate dimensions
   var maxCards = 0;
   _draftColumnKeys.forEach(function(k) {
     var len = (cols[k] || []).length;
@@ -1284,14 +1280,22 @@ function renderDraftColumns() {
   var colCount = _draftColumnKeys.length || 9;
   var colWidth = Math.max(110, scrollEl.clientWidth / colCount);
   var cardH = colWidth * 7 / 5;
+
+  // Calculate overlap based on viewport constraint
+  var rect = scrollEl.getBoundingClientRect();
+  var viewportAvail = Math.max(200, window.innerHeight - (rect.top || 0) - 20);
+  var headerH = 36;
+  var bodyH = viewportAvail - headerH;
   var cardOverlap = 0;
   if (maxCards > 1) {
-    var availableH = scrollEl.clientHeight || 500;
-    var neededOverlap = (cardH * maxCards - availableH) / (maxCards - 1);
-    cardOverlap = Math.max(0, Math.min(cardH * 0.82, neededOverlap));
+    var fitOverlap = (cardH * maxCards - bodyH) / (maxCards - 1);
+    cardOverlap = Math.max(0, fitOverlap);
+    cardOverlap = Math.min(cardOverlap, cardH * 0.9);
   }
 
-  _draftColumnKeys.forEach(function(key) {
+  scrollEl.innerHTML = '';
+
+  _draftColumnKeys.forEach(function(key, keyIdx) {
     var cards = cols[key] || [];
     var colEl = document.createElement('div');
     colEl.className = 'draft-column' + (key === 'Sideboard' ? ' sideboard' : '');
@@ -1318,31 +1322,24 @@ function renderDraftColumns() {
         var nameKey = card.name || String(card.id);
         if (!groupMap[nameKey]) {
           groupMap[nameKey] = [];
-          groups.push({ name: nameKey, cards: [] });
+          groups.push({ name: nameKey, cards: groupMap[nameKey] });
         }
         groupMap[nameKey].push(card);
-        groups[groups.length - 1].cards = groupMap[nameKey];
       });
 
       groups.forEach(function(group, groupIdx) {
         var card = group.cards[0]; // representative card for display
         var count = group.cards.length;
 
-        var cardEl = document.createElement('div');
-        cardEl.className = 'draft-column-card';
+        var cardEl = createCardElement(card, null);
+        cardEl.className = 'mtg-card draft-column-card';
+        cardEl.style.width = '100%';
         cardEl.setAttribute('draggable', 'true');
         cardEl.setAttribute('data-card-id', card.id);
         cardEl.setAttribute('data-column', key);
         cardEl.style.zIndex = groupIdx + 1;
         if (groupIdx < groups.length - 1) {
           cardEl.style.marginBottom = -cardOverlap + 'px';
-        }
-
-        var imgSrc = card.image_small || card.image;
-        if (imgSrc) {
-          cardEl.innerHTML = '<img src="' + imgSrc + '" alt="' + (card.name || '') + '" loading="lazy">';
-        } else {
-          cardEl.innerHTML = '<div style="width:100%;aspect-ratio:5/7;background:var(--bg-mid);border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:0.6rem;color:var(--text-muted);text-align:center;padding:4px">' + (card.name || '?') + '</div>';
         }
 
         // Count badge for stacked identical cards
@@ -1352,17 +1349,6 @@ function renderDraftColumns() {
           badge.textContent = 'x' + count;
           cardEl.appendChild(badge);
         }
-
-        // Name label at bottom of visible portion
-        var nameLabel = document.createElement('div');
-        nameLabel.className = 'draft-col-card-name';
-        nameLabel.textContent = card.name || '';
-        cardEl.appendChild(nameLabel);
-
-        // Hover preview
-        cardEl.addEventListener('mouseenter', function(e) { showCardPreview(card, e); moveCardPreview(e); });
-        cardEl.addEventListener('mousemove', function(e) { moveCardPreview(e); });
-        cardEl.addEventListener('mouseleave', function() { hideCardPreview(); });
 
         // Drag start — only drags one card from the stack
         cardEl.addEventListener('dragstart', function(e) {
@@ -1440,13 +1426,62 @@ function renderDraftColumns() {
 
     colEl.appendChild(body);
     scrollEl.appendChild(colEl);
+
+    // Drop zone between columns (deck mode only)
+    if (_columnMode === 'deck' && keyIdx < _draftColumnKeys.length - 1) {
+      (function(nextKey) {
+        var zone = document.createElement('div');
+        zone.className = 'draft-column-dropzone';
+        zone.addEventListener('dragover', function(e) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          zone.classList.add('active');
+        });
+        zone.addEventListener('dragleave', function() {
+          zone.classList.remove('active');
+        });
+        zone.addEventListener('drop', function(e) {
+          e.preventDefault();
+          zone.classList.remove('active');
+          try {
+            var data = JSON.parse(e.dataTransfer.getData('text/plain'));
+            var newKey = _createCustomColumnKey();
+            _insertColumnKeyAt(newKey, nextKey);
+            var cols = _getColumns();
+            if (cols) {
+              cols[newKey] = [];
+              if (data.fromColumn) {
+                var fromArr = cols[data.fromColumn] || [];
+                var cardIdx = -1;
+                for (var i = 0; i < fromArr.length; i++) {
+                  if (String(fromArr[i].id) === String(data.cardId)) { cardIdx = i; break; }
+                }
+                if (cardIdx >= 0) {
+                  var card = fromArr.splice(cardIdx, 1)[0];
+                  cols[newKey].push(card);
+                }
+              } else if (data.source === 'deck-search' && data.card) {
+                cols[newKey].push(data.card);
+              }
+              _removeEmptyCustomColumns();
+              _saveDeckColumns();
+              renderDraftColumns();
+            }
+          } catch (err) { /* ignore bad drops */ }
+        });
+        scrollEl.appendChild(zone);
+      })(_draftColumnKeys[keyIdx + 1]);
+    }
   });
 
   // Update pool count
   var countEl = _getPoolCountEl();
   if (countEl) {
     var total = 0;
-    _draftColumnKeys.forEach(function(k) { total += (cols[k] || []).length; });
+    _draftColumnKeys.forEach(function(k) {
+      if (_columnMode === 'deck' && k === 'Sideboard') return;
+      total += (cols[k] || []).length;
+    });
     countEl.textContent = total + '张';
   }
 }
@@ -1465,8 +1500,112 @@ function handleDraftColumnDrop(cardId, fromColumn, toColumn) {
   if (!cols[toColumn]) cols[toColumn] = [];
   cols[toColumn].push(card);
   _setManualPlacement(card.id, toColumn);
+  _removeEmptyCustomColumns();
   if (_columnMode === 'deck') { _saveDeckColumns(); } else { _saveDraftColumns(); }
   renderDraftColumns();
+}
+
+function renderReadOnlyDeckColumns(containerId, deck) {
+  var scrollEl = document.getElementById(containerId);
+  if (!scrollEl || !deck) return;
+
+  var hasCustomLayout = deck.column_keys && deck.column_keys.length > 0;
+  var keys = hasCustomLayout ? deck.column_keys : _baseColumnKeys;
+  var cols = {};
+  keys.forEach(function(k) { cols[k] = []; });
+
+  (deck.main_deck || []).forEach(function(card) {
+    var col = (hasCustomLayout && card._column) ? card._column : getDraftCardColumn(card);
+    if (!cols[col]) {
+      if (hasCustomLayout) { col = getDraftCardColumn(card); }
+      if (!cols[col]) cols[col] = [];
+    }
+    cols[col].push(card);
+  });
+  (deck.sideboard || []).forEach(function(card) {
+    if (!cols['Sideboard']) cols['Sideboard'] = [];
+    cols['Sideboard'].push(card);
+  });
+  (deck.outside_game || []).forEach(function(card) {
+    if (!cols['Outside']) cols['Outside'] = [];
+    cols['Outside'].push(card);
+  });
+
+  var maxCards = 0;
+  keys.forEach(function(k) {
+    var len = (cols[k] || []).length;
+    if (len > maxCards) maxCards = len;
+  });
+  var colCount = keys.length || 9;
+  var colWidth = Math.max(110, scrollEl.clientWidth / colCount);
+  var cardH = colWidth * 7 / 5;
+
+  // Calculate overlap based on viewport constraint
+  var rect = scrollEl.getBoundingClientRect();
+  var viewportAvail = Math.max(200, window.innerHeight - (rect.top || 0) - 20);
+  var headerH = 36;
+  var bodyH = viewportAvail - headerH;
+  var cardOverlap = 0;
+  if (maxCards > 1) {
+    var fitOverlap = (cardH * maxCards - bodyH) / (maxCards - 1);
+    cardOverlap = Math.max(0, fitOverlap);
+    cardOverlap = Math.min(cardOverlap, cardH * 0.9);
+  }
+
+  scrollEl.innerHTML = '';
+
+  keys.forEach(function(key) {
+    var cards = cols[key] || [];
+    if (cards.length === 0) return;
+
+    var colEl = document.createElement('div');
+    colEl.className = 'draft-column' + (key === 'Sideboard' ? ' sideboard' : '');
+    colEl.setAttribute('data-column', key);
+
+    var header = document.createElement('div');
+    header.className = 'draft-column-header';
+    header.innerHTML = '<span>' + (_draftColumnNames[key] || key) + '</span><span class="draft-column-count">' + cards.length + '</span>';
+    colEl.appendChild(header);
+
+    var body = document.createElement('div');
+    body.className = 'draft-column-body';
+
+    var groups = [];
+    var groupMap = {};
+    cards.forEach(function(card) {
+      var nameKey = card.name || String(card.id);
+      if (!groupMap[nameKey]) {
+        groupMap[nameKey] = [];
+        groups.push({ name: nameKey, cards: groupMap[nameKey] });
+      }
+      groupMap[nameKey].push(card);
+    });
+
+    groups.forEach(function(group, groupIdx) {
+      var card = group.cards[0];
+      var count = group.cards.length;
+
+      var cardEl = createCardElement(card, null);
+      cardEl.className = 'mtg-card draft-column-card';
+      cardEl.style.width = '100%';
+      cardEl.style.zIndex = groupIdx + 1;
+      if (groupIdx < groups.length - 1) {
+        cardEl.style.marginBottom = -cardOverlap + 'px';
+      }
+
+      if (count > 1) {
+        var badge = document.createElement('div');
+        badge.className = 'draft-col-card-count';
+        badge.textContent = 'x' + count;
+        cardEl.appendChild(badge);
+      }
+
+      body.appendChild(cardEl);
+    });
+
+    colEl.appendChild(body);
+    scrollEl.appendChild(colEl);
+  });
 }
 
 function stageDraftPick(card, targetColumn) {

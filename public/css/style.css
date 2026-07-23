@@ -4120,13 +4120,44 @@ body.draft-fullscreen #content > .page-header {
   min-height: 200px;
   display: flex;
   gap: 0;
-  overflow-x: auto;
   padding: 0;
   background: var(--bg-darkest);
 }
 .draft-columns-scroll::-webkit-scrollbar { height: 6px; }
 .draft-columns-scroll::-webkit-scrollbar-track { background: var(--bg-darkest); }
 .draft-columns-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* Drop zone between columns */
+.draft-column-dropzone {
+  width: 12px;
+  flex-shrink: 0;
+  background: transparent;
+  border-left: 2px dashed transparent;
+  border-right: 2px dashed transparent;
+  transition: all 0.15s ease;
+  cursor: copy;
+  position: relative;
+}
+.draft-column-dropzone::after {
+  content: '+';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 0.7rem;
+  color: transparent;
+  transition: color 0.15s ease;
+}
+.draft-column-dropzone.active {
+  background: rgba(52, 152, 219, 0.15);
+  border-left: 2px dashed var(--primary);
+  border-right: 2px dashed var(--primary);
+  width: 20px;
+}
+.draft-column-dropzone.active::after {
+  color: var(--primary);
+  font-weight: bold;
+}
 
 /* Individual column */
 .draft-column {
@@ -4172,36 +4203,27 @@ body.draft-fullscreen #content > .page-header {
 }
 .draft-column-body {
   flex: 1;
-  overflow-y: visible;
-  overflow-x: hidden;
   position: relative;
   min-height: 40px;
-  padding: 4px;
+  padding: 8px;
 }
 .draft-column-body::-webkit-scrollbar { width: 4px; }
 .draft-column-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
 /* Cards inside columns — stacked with offset */
 .draft-column-card {
-  position: relative;
   cursor: grab;
-  transition: transform 0.15s, box-shadow 0.15s, z-index 0s;
-  border-radius: 4px;
-  z-index: 1;
+  flex-shrink: 0;
 }
 .draft-column-card:last-child {
   margin-bottom: 0;
 }
 .draft-column-card:hover {
-  transform: translateX(4px) scale(1.02);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
   z-index: 100 !important;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5), 0 0 0 1px rgba(212, 160, 67, 0.3);
 }
-.draft-column-card img {
-  width: 100%;
-  display: block;
-  border-radius: 4px;
-  pointer-events: none;
+.draft-column-card.dragging {
+  opacity: 0.4;
 }
 .draft-column-card .draft-col-card-name {
   position: absolute;
@@ -4231,9 +4253,6 @@ body.draft-fullscreen #content > .page-header {
   pointer-events: none;
   box-shadow: 0 1px 4px rgba(0,0,0,0.5);
   z-index: 2;
-}
-.draft-column-card.dragging {
-  opacity: 0.4;
 }
 
 /* Empty column placeholder */
