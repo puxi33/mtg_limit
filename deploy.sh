@@ -18,6 +18,36 @@ for cmd in docker aliyun; do
   fi
 done
 
+# ========== Docker daemon 检查 ==========
+echo ">>> 检查 Docker daemon..."
+if ! docker info &>/dev/null; then
+  echo "    Docker daemon 未运行，尝试启动..."
+  if command -v colima &>/dev/null; then
+    echo "    使用 colima 启动..."
+    if ! colima start --arch aarch64 --vm-type vz --memory 4; then
+      echo "错误: colima 启动失败，请手动检查后重试"
+      exit 1
+    fi
+  elif [ -d "/Applications/Docker.app" ]; then
+    echo "    启动 Docker Desktop..."
+    open -a Docker
+    WAIT=0
+    while ! docker info &>/dev/null && [ $WAIT -lt 60 ]; do
+      sleep 2
+      WAIT=$((WAIT + 2))
+    done
+  else
+    echo "错误: Docker daemon 未运行，且未找到 colima / Docker Desktop，请手动启动后重试"
+    exit 1
+  fi
+
+  if ! docker info &>/dev/null; then
+    echo "错误: Docker daemon 启动失败，请手动检查后重试"
+    exit 1
+  fi
+fi
+echo "    Docker daemon 就绪"
+
 # ========== 获取当前最新版本号并递增 ==========
 echo ">>> 查询镜像仓库当前最新版本..."
 

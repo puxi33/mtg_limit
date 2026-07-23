@@ -1576,9 +1576,9 @@ app.post('/api/events', authMiddleware, (req, res) => {
     if (!name || !type) return res.status(400).json({ error: '名称和类型不能为空' });
     if (!['draft', 'sealed'].includes(type)) return res.status(400).json({ error: '无效的事件类型' });
     if (cube_id) {
-      const cube = isAdmin(req)
-        ? db.prepare('SELECT * FROM cubes WHERE id = ?').get(cube_id)
-        : db.prepare('SELECT * FROM cubes WHERE id = ? AND user_id = ?').get(cube_id, req.user.id);
+      // Cubes are shared across all users (GET /api/cubes lists everyone's cubes),
+      // so any existing cube can be used to create an event
+      const cube = db.prepare('SELECT id FROM cubes WHERE id = ?').get(cube_id);
       if (!cube) return res.status(404).json({ error: 'Cube不存在' });
     }
     if (!cube_id && !set_code) return res.status(400).json({ error: '请选择Cube或万智牌系列' });
