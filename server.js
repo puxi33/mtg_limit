@@ -2363,9 +2363,13 @@ app.post('/api/events/:id/auto-pair', authMiddleware, (req, res) => {
       const d2 = { name: p2.deck_name, main_deck: JSON.parse(p2.main_deck), sideboard: JSON.parse(p2.sideboard), outside_game: JSON.parse(p2.outside_game || '[]') };
       const name = `R1: ${p1.username} vs ${p2.username}`;
       const result = db.prepare(
-        'INSERT INTO battles (name, player1_id, player1_deck, player2_id, player2_deck, event_id, status, round, bracket) VALUES (?,?,?,?,?,?,?,?,?)'
-      ).run(name, p1.user_id, JSON.stringify(d1), p2.user_id, JSON.stringify(d2), req.params.id, 'waiting', 1, 'winners');
-      createdBattles.push({ id: result.lastInsertRowid, p1: p1.username, p2: p2.username });
+        'INSERT INTO battles (name, player1_id, player1_deck, player2_id, player2_deck, event_id, status, round, bracket, format_type) VALUES (?,?,?,?,?,?,?,?,?,?)'
+      ).run(name, p1.user_id, JSON.stringify(d1), p2.user_id, JSON.stringify(d2), req.params.id, 'waiting', 1, 'winners', 'limited');
+      const battleId = result.lastInsertRowid;
+      // 填充 battle_players，等待界面即可识别双方已就位（直接使用限制赛牌组），无需再加入/选牌
+      db.prepare('INSERT INTO battle_players (battle_id, user_id, deck, position) VALUES (?,?,?,?)').run(battleId, p1.user_id, JSON.stringify(d1), 0);
+      db.prepare('INSERT INTO battle_players (battle_id, user_id, deck, position) VALUES (?,?,?,?)').run(battleId, p2.user_id, JSON.stringify(d2), 1);
+      createdBattles.push({ id: battleId, p1: p1.username, p2: p2.username });
     }
 
     // Create bye battle: bye player gets an automatic win (counts as WB victory)
@@ -2373,8 +2377,9 @@ app.post('/api/events/:id/auto-pair', authMiddleware, (req, res) => {
       const byeDeck = { name: byePlayer.deck_name, main_deck: JSON.parse(byePlayer.main_deck), sideboard: JSON.parse(byePlayer.sideboard), outside_game: JSON.parse(byePlayer.outside_game || '[]') };
       const byeBattleName = `R1: ${byePlayer.username} 轮空晋级`;
       const byeResult = db.prepare(
-        'INSERT INTO battles (name, player1_id, player1_deck, player2_id, player2_deck, event_id, status, winner_id, round, bracket) VALUES (?,?,?,NULL,NULL,?,?,?,?,?)'
-      ).run(byeBattleName, byePlayer.user_id, JSON.stringify(byeDeck), req.params.id, 'completed', byePlayer.user_id, 1, 'winners');
+        'INSERT INTO battles (name, player1_id, player1_deck, player2_id, player2_deck, event_id, status, winner_id, round, bracket, format_type) VALUES (?,?,?,NULL,NULL,?,?,?,?,?,?)'
+      ).run(byeBattleName, byePlayer.user_id, JSON.stringify(byeDeck), req.params.id, 'completed', byePlayer.user_id, 1, 'winners', 'limited');
+      db.prepare('INSERT INTO battle_players (battle_id, user_id, deck, position) VALUES (?,?,?,?)').run(byeResult.lastInsertRowid, byePlayer.user_id, JSON.stringify(byeDeck), 0);
       createdBattles.push({ id: byeResult.lastInsertRowid, p1: byePlayer.username, p2: '轮空晋级', bye: true });
     }
 
@@ -2487,9 +2492,13 @@ app.post('/api/events/:id/next-round', authMiddleware, (req, res) => {
       const prefix = bracket === 'losers' ? 'LB' : (bracket === 'finals' ? 'GF' : 'WB');
       const name = `${prefix} R${round}: ${p1Name} vs ${p2Name}`;
       const result = db.prepare(
-        'INSERT INTO battles (name, player1_id, player1_deck, player2_id, player2_deck, event_id, status, round, bracket) VALUES (?,?,?,?,?,?,?,?,?)'
-      ).run(name, p1Id, JSON.stringify(d1), p2Id, JSON.stringify(d2), eventId, 'waiting', round, bracket);
-      return { id: result.lastInsertRowid, p1: p1Name, p2: p2Name, bracket };
+        'INSERT INTO battles (name, player1_id, player1_deck, player2_id, player2_deck, event_id, status, round, bracket, format_type) VALUES (?,?,?,?,?,?,?,?,?,?)'
+      ).run(name, p1Id, JSON.stringify(d1), p2Id, JSON.stringify(d2), eventId, 'waiting', round, bracket, 'limited');
+      const battleId = result.lastInsertRowid;
+      // 填充 battle_players，等待界面即可识别双方已就位（直接使用限制赛牌组），无需再加入/选牌
+      db.prepare('INSERT INTO battle_players (battle_id, user_id, deck, position) VALUES (?,?,?,?)').run(battleId, p1Id, JSON.stringify(d1), 0);
+      db.prepare('INSERT INTO battle_players (battle_id, user_id, deck, position) VALUES (?,?,?,?)').run(battleId, p2Id, JSON.stringify(d2), 1);
+      return { id: battleId, p1: p1Name, p2: p2Name, bracket };
     }
 
     // Get all players who have ever participated (have a deck)
@@ -2734,10 +2743,19 @@ app.post('/api/battles/:id/join', authMiddleware, (req, res) => {
     if (battle.player1_id === req.user.id) return res.status(400).json({ error: '不能加入自己的对战' });
 
     const isMultiplayer = battle.battle_type === 'multiplayer';
-    const deck = isAdmin(req)
-      ? db.prepare('SELECT * FROM decks WHERE id = ?').get(deck_id)
-      : db.prepare('SELECT * FROM decks WHERE id = ? AND user_id = ?').get(deck_id, req.user.id);
-    if (!deck) return res.status(404).json({ error: '牌组不存在' });
+    const isLimitedEvent = battle.format_type === 'limited' && battle.event_id;
+
+    let deck;
+    if (isLimitedEvent) {
+      // 限制赛对战：直接使用玩家在该限制赛中构建的牌组，无需选择牌组/校验牌组类型
+      deck = db.prepare('SELECT * FROM decks WHERE event_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 1').get(battle.event_id, req.user.id);
+      if (!deck) return res.status(404).json({ error: '请先在限制赛中构建牌组' });
+    } else {
+      deck = isAdmin(req)
+        ? db.prepare('SELECT * FROM decks WHERE id = ?').get(deck_id)
+        : db.prepare('SELECT * FROM decks WHERE id = ? AND user_id = ?').get(deck_id, req.user.id);
+      if (!deck) return res.status(404).json({ error: '牌组不存在' });
+    }
     const deckData = {
       name: deck.name, main_deck: JSON.parse(deck.main_deck), sideboard: JSON.parse(deck.sideboard),
       outside_game: JSON.parse(deck.outside_game || '[]')

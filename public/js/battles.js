@@ -254,6 +254,13 @@ function renderBattleCompleted(el, battle, id) {
 async function joinBattle(battleId) {
   try {
     const battle = await api('/api/battles/' + battleId);
+    // 限制赛对战：直接使用限制赛中组好的牌组，无需校验牌组类型或选择牌组
+    if (battle.format_type === 'limited' && battle.event_id) {
+      await api('/api/battles/' + battleId + '/join', { method: 'POST', body: JSON.stringify({}) });
+      showToast('已加入对战');
+      navigate('battle-detail', { id: battleId });
+      return;
+    }
     const allDecks = await api('/api/decks');
     var filtered = allDecks.filter(function(d) {
       var isLimited = !!d.event_id;
