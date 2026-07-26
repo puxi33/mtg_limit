@@ -65,7 +65,6 @@ async function renderBattles(el) {
       <div class="card-grid">
         ${battles.map(b => {
           var battleTypeLabel = b.battle_type === 'multiplayer' ? '多人' : '1v1';
-          var deckTypeLabel = b.deck_type === 'commander' ? '指挥官' : '普通';
           var formatTypeLabel = b.format_type === 'limited' ? '限制赛' : '普通';
           var playerCountLabel = b.battle_type === 'multiplayer' && b.player_count ? ' · ' + b.player_count + '人' : '';
           return `
@@ -77,7 +76,6 @@ async function renderBattles(el) {
             </span>
             <div class="card-meta" style="margin-top:6px;flex-wrap:wrap;gap:4px">
               <span class="deck-tag" style="background:rgba(78,168,222,0.15);color:#4ea8de;border:1px solid rgba(78,168,222,0.3)">${battleTypeLabel}${playerCountLabel}</span>
-              <span class="deck-tag" style="background:rgba(212,175,55,0.15);color:#d4af37;border:1px solid rgba(212,175,55,0.3)">${deckTypeLabel}</span>
               <span class="deck-tag" style="background:rgba(122,130,153,0.15);color:#8a8a9a;border:1px solid rgba(122,130,153,0.3)">${formatTypeLabel}</span>
             </div>
             <div class="card-meta" style="margin-top:6px">
@@ -109,14 +107,11 @@ async function showCreateBattleModal() {
     const allDecks = await api('/api/decks');
     if (allDecks.length === 0) { showToast('请先创建一个牌组', 'error'); return; }
 
-    var modalState = { battleType: '1v1', deckType: 'normal', formatType: 'normal' };
+    var modalState = { battleType: '1v1', formatType: 'normal' };
 
     function filterDecks() {
       return allDecks.filter(function(d) {
         var isLimited = !!d.event_id;
-        var isCommander = d.type === 'commander';
-        if (modalState.deckType === 'commander' && !isCommander) return false;
-        if (modalState.deckType === 'normal' && isCommander) return false;
         if (modalState.formatType === 'limited' && !isLimited) return false;
         if (modalState.formatType === 'normal' && isLimited) return false;
         return true;
@@ -125,7 +120,6 @@ async function showCreateBattleModal() {
 
     function renderModal() {
       var bt = modalState.battleType;
-      var dt = modalState.deckType;
       var ft = modalState.formatType;
       var filtered = filterDecks();
       var deckOptions = filtered.map(function(d) {
@@ -149,12 +143,6 @@ async function showCreateBattleModal() {
           '</div>' +
         '</div>' +
         playerCountHtml +
-        '<div class="form-group"><label>牌组类型</label>' +
-          '<div class="tab-switcher">' +
-            '<button type="button" class="tab-option' + (dt === 'normal' ? ' active' : '') + '" onclick="window._setBattleTab(\'deckType\',\'normal\')">普通牌组</button>' +
-            '<button type="button" class="tab-option' + (dt === 'commander' ? ' active' : '') + '" onclick="window._setBattleTab(\'deckType\',\'commander\')">指挥官牌组</button>' +
-          '</div>' +
-        '</div>' +
         '<div class="form-group"><label>对战格式</label>' +
           '<div class="tab-switcher">' +
             '<button type="button" class="tab-option' + (ft === 'normal' ? ' active' : '') + '" onclick="window._setBattleTab(\'formatType\',\'normal\')">普通对战</button>' +
@@ -166,7 +154,6 @@ async function showCreateBattleModal() {
           (filtered.length === 0 ? '<div style="font-size:0.8rem;color:var(--text-muted);margin-top:4px">当前没有符合条件的牌组，请先创建对应类型的牌组</div>' : '') +
         '</div>' +
         '<input type="hidden" id="battle-type" value="' + bt + '">' +
-        '<input type="hidden" id="battle-deck-type" value="' + dt + '">' +
         '<input type="hidden" id="battle-format-type" value="' + ft + '">' +
         '<button type="submit" class="btn btn-primary btn-block"' + (filtered.length === 0 ? ' disabled' : '') + '>创建</button>' +
         '</form>'
@@ -188,12 +175,11 @@ async function handleCreateBattle(e) {
   const deck_id = parseInt(document.getElementById('battle-deck').value);
   if (!deck_id) { showToast('请选择一个牌组', 'error'); return; }
   const battle_type = document.getElementById('battle-type').value;
-  const deck_type = document.getElementById('battle-deck-type').value;
   const format_type = document.getElementById('battle-format-type').value;
   const playerCountEl = document.getElementById('battle-player-count');
   const player_count = playerCountEl ? parseInt(playerCountEl.value) : 2;
   try {
-    const battle = await api('/api/battles', { method: 'POST', body: JSON.stringify({ deck_id, name, battle_type, deck_type, format_type, player_count }) });
+    const battle = await api('/api/battles', { method: 'POST', body: JSON.stringify({ deck_id, name, battle_type, format_type, player_count }) });
     closeModal();
     showToast('对战已创建，等待对手加入');
     window.open(`/battle.html?id=${battle.id}`, '_blank');
@@ -264,11 +250,7 @@ async function joinBattle(battleId) {
     const allDecks = await api('/api/decks');
     var filtered = allDecks.filter(function(d) {
       var isLimited = !!d.event_id;
-      var isCommander = d.type === 'commander';
-      var bDeckType = battle.deck_type || 'normal';
       var bFormatType = battle.format_type || 'normal';
-      if (bDeckType === 'commander' && !isCommander) return false;
-      if (bDeckType === 'normal' && isCommander) return false;
       if (bFormatType === 'limited' && !isLimited) return false;
       if (bFormatType === 'normal' && isLimited) return false;
       return true;
@@ -325,7 +307,6 @@ function renderBattleLobby(el, battle, id) {
   const canStart = isOwner && isFull && battle.status === 'waiting';
 
   var battleTypeLabel = isMultiplayer ? '多人对战' : '1v1 对战';
-  var deckTypeLabel = battle.deck_type === 'commander' ? '指挥官牌组' : '普通牌组';
   var formatTypeLabel = battle.format_type === 'limited' ? '限制赛' : '普通';
   var playerCountInfo = isMultiplayer ? ' · ' + currentCount + '/' + requiredCount + '人' : '';
 
@@ -363,7 +344,6 @@ function renderBattleLobby(el, battle, id) {
       <p>${vsText}</p>
       <div style="margin-top:12px;display:flex;gap:6px;justify-content:center;flex-wrap:wrap">
         <span class="deck-tag" style="background:rgba(78,168,222,0.15);color:#4ea8de;border:1px solid rgba(78,168,222,0.3)">${battleTypeLabel}${playerCountInfo}</span>
-        <span class="deck-tag" style="background:rgba(212,175,55,0.15);color:#d4af37;border:1px solid rgba(212,175,55,0.3)">${deckTypeLabel}</span>
         <span class="deck-tag" style="background:rgba(122,130,153,0.15);color:#8a8a9a;border:1px solid rgba(122,130,153,0.3)">${formatTypeLabel}</span>
       </div>
       ${isMultiplayer ? '<div style="margin-top:16px;display:flex;flex-direction:column;gap:8px;align-items:center">' + playersHtml + '</div>' : ''}

@@ -2317,11 +2317,136 @@ app.get('/api/events/:id/battles', authMiddleware, (req, res) => {
 });
 
 // Auto-pair: shuffle players with decks, create round 1 battles (single elimination)
+// ============================================================
+// TOURNAMENT HELPERS (Swiss / Single Elimination / Double Elim)
+// ============================================================
+
+// 读取赛事的淘汰/赛制结构：double_elim(默认) | single_elim | swiss
+function getTournamentType(event) {
+  let settings = {};
+  try { settings = JSON.parse(event.settings || '{}'); } catch (e) {}
+  return settings.tournament || 'double_elim';
+}
+
+// 获取玩家在赛事中构建的牌组（最新一副）
+function getEventDeck(eventId, userId) {
+  const d = db.prepare('SELECT * FROM decks WHERE user_id = ? AND event_id = ? ORDER BY created_at DESC LIMIT 1').get(userId, eventId);
+  if (!d) return null;
+  return { name: d.name, main_deck: JSON.parse(d.main_deck), sideboard: JSON.parse(d.sideboard), outside_game: JSON.parse(d.outside_game || '[]') };
+}
+
+// 创建一场赛事对战，并填充 battle_players；p2 为空表示轮空(自动胜)
+function insertEventBattle(eventId, p1Id, p1Name, p2Id, p2Name, round, bracket) {
+  const d1 = getEventDeck(eventId, p1Id);
+  if (!d1) return null;
+  let d2 = null;
+  if (p2Id) {
+    d2 = getEventDeck(eventId, p2Id);
+    if (!d2) return null;
+  }
+  const prefix = bracket === 'losers' ? 'LB' : (bracket === 'finals' ? 'GF' : (bracket === 'swiss' ? 'SW' : 'WB'));
+  const name = p2Id ? `${prefix} R${round}: ${p1Name} vs ${p2Name}` : `R${round}: ${p1Name} 轮空晋级`;
+  const result = db.prepare(
+    'INSERT INTO battles (name, player1_id, player1_deck, player2_id, player2_deck, event_id, status, round, bracket, format_type) VALUES (?,?,?,?,?,?,?,?,?,?)'
+  ).run(name, p1Id, JSON.stringify(d1), p2Id || null, p2Id ? JSON.stringify(d2) : null, eventId, p2Id ? 'waiting' : 'completed', round, bracket, 'limited');
+  const battleId = result.lastInsertRowid;
+  db.prepare('INSERT INTO battle_players (battle_id, user_id, deck, position) VALUES (?,?,?,?)').run(battleId, p1Id, JSON.stringify(d1), 0);
+  if (p2Id) {
+    db.prepare('INSERT INTO battle_players (battle_id, user_id, deck, position) VALUES (?,?,?,?)').run(battleId, p2Id, JSON.stringify(d2), 1);
+  } else {
+    db.prepare('UPDATE battles SET winner_id = ? WHERE id = ?').run(p1Id, battleId);
+  }
+  return battleId;
+}
+
+// 查询某轮轮空的玩家(用于"不允许连续两轮同一玩家轮空")
+function getByePlayerOfRound(eventId, round) {
+  const row = db.prepare(
+    'SELECT player1_id FROM battles WHERE event_id = ? AND round = ? AND player2_id IS NULL'
+  ).get(eventId, round);
+  return row ? row.player1_id : null;
+}
+
+// 计算赛事积分(wins/losses/局胜/局负)，轮空计为胜
+function computeEventStandings(eventId, players) {
+  const standings = {};
+  players.forEach(p => {
+    standings[p.user_id] = { user_id: p.user_id, username: p.username, wins: 0, losses: 0, gameWins: 0, gameLosses: 0 };
+  });
+  const battles = db.prepare("SELECT * FROM battles WHERE event_id = ? AND status = 'completed'").all(eventId);
+  battles.forEach(b => {
+    if (!b.winner_id) return;
+    const p1w = b.player1_wins || 0, p2w = b.player2_wins || 0;
+    if (standings[b.player1_id]) {
+      standings[b.player1_id].gameWins += p1w;
+      standings[b.player1_id].gameLosses += p2w;
+      if (b.winner_id === b.player1_id) standings[b.player1_id].wins++;
+      else standings[b.player1_id].losses++;
+    }
+    if (b.player2_id != null && standings[b.player2_id]) {
+      standings[b.player2_id].gameWins += p2w;
+      standings[b.player2_id].gameLosses += p1w;
+      if (b.winner_id === b.player2_id) standings[b.player2_id].wins++;
+      else standings[b.player2_id].losses++;
+    }
+  });
+  return standings;
+}
+
+// 已交手过的配对集合(瑞士轮避免重赛)
+function getPastMatchups(eventId) {
+  const battles = db.prepare('SELECT player1_id, player2_id FROM battles WHERE event_id = ? AND player2_id IS NOT NULL').all(eventId);
+  const set = new Set();
+  battles.forEach(b => {
+    const key = b.player1_id < b.player2_id ? b.player1_id + '-' + b.player2_id : b.player2_id + '-' + b.player1_id;
+    set.add(key);
+  });
+  return set;
+}
+
+// 瑞士轮贪心配对：按排名顺序，优先未交手的对手；实在无解才允许重赛
+function swissPairPlayers(players, pastMatchups) {
+  const paired = new Set();
+  const pairs = [];
+  for (let i = 0; i < players.length; i++) {
+    const pi = players[i];
+    if (paired.has(pi.user_id)) continue;
+    let opponent = null;
+    for (let j = i + 1; j < players.length; j++) {
+      const pj = players[j];
+      if (paired.has(pj.user_id)) continue;
+      const key = pi.user_id < pj.user_id ? pi.user_id + '-' + pj.user_id : pj.user_id + '-' + pi.user_id;
+      if (!pastMatchups.has(key)) { opponent = pj; break; }
+    }
+    if (!opponent) {
+      for (let j = i + 1; j < players.length; j++) {
+        if (!paired.has(players[j].user_id)) { opponent = players[j]; break; }
+      }
+    }
+    if (opponent) {
+      paired.add(pi.user_id);
+      paired.add(opponent.user_id);
+      pairs.push([pi, opponent]);
+    }
+  }
+  const remaining = players.filter(p => !paired.has(p.user_id));
+  return { pairs, remaining };
+}
+
+// 瑞士轮总轮次：2^(x-1) <= 人数 <= 2^x  =>  x = ceil(log2(人数))
+function swissTotalRounds(n) {
+  if (n <= 1) return 1;
+  return Math.ceil(Math.log2(n));
+}
+
 app.post('/api/events/:id/auto-pair', authMiddleware, (req, res) => {
   try {
     const event = db.prepare('SELECT * FROM events WHERE id = ?').get(req.params.id);
     if (!event) return res.status(404).json({ error: '活动不存在' });
     if (!isAdmin(req) && event.user_id !== req.user.id) return res.status(403).json({ error: '只有创建者可以配对' });
+
+    const tournament = getTournamentType(event);
+    const mainBracket = tournament === 'swiss' ? 'swiss' : 'winners';
 
     // Check no battles exist yet
     const existingBattles = db.prepare('SELECT COUNT(*) as cnt FROM battles WHERE event_id = ?').get(req.params.id);
@@ -2364,7 +2489,7 @@ app.post('/api/events/:id/auto-pair', authMiddleware, (req, res) => {
       const name = `R1: ${p1.username} vs ${p2.username}`;
       const result = db.prepare(
         'INSERT INTO battles (name, player1_id, player1_deck, player2_id, player2_deck, event_id, status, round, bracket, format_type) VALUES (?,?,?,?,?,?,?,?,?,?)'
-      ).run(name, p1.user_id, JSON.stringify(d1), p2.user_id, JSON.stringify(d2), req.params.id, 'waiting', 1, 'winners', 'limited');
+      ).run(name, p1.user_id, JSON.stringify(d1), p2.user_id, JSON.stringify(d2), req.params.id, 'waiting', 1, mainBracket, 'limited');
       const battleId = result.lastInsertRowid;
       // 填充 battle_players，等待界面即可识别双方已就位（直接使用限制赛牌组），无需再加入/选牌
       db.prepare('INSERT INTO battle_players (battle_id, user_id, deck, position) VALUES (?,?,?,?)').run(battleId, p1.user_id, JSON.stringify(d1), 0);
@@ -2378,7 +2503,7 @@ app.post('/api/events/:id/auto-pair', authMiddleware, (req, res) => {
       const byeBattleName = `R1: ${byePlayer.username} 轮空晋级`;
       const byeResult = db.prepare(
         'INSERT INTO battles (name, player1_id, player1_deck, player2_id, player2_deck, event_id, status, winner_id, round, bracket, format_type) VALUES (?,?,?,NULL,NULL,?,?,?,?,?,?)'
-      ).run(byeBattleName, byePlayer.user_id, JSON.stringify(byeDeck), req.params.id, 'completed', byePlayer.user_id, 1, 'winners', 'limited');
+      ).run(byeBattleName, byePlayer.user_id, JSON.stringify(byeDeck), req.params.id, 'completed', byePlayer.user_id, 1, mainBracket, 'limited');
       db.prepare('INSERT INTO battle_players (battle_id, user_id, deck, position) VALUES (?,?,?,?)').run(byeResult.lastInsertRowid, byePlayer.user_id, JSON.stringify(byeDeck), 0);
       createdBattles.push({ id: byeResult.lastInsertRowid, p1: byePlayer.username, p2: '轮空晋级', bye: true });
     }
@@ -2508,6 +2633,117 @@ app.post('/api/events/:id/next-round', authMiddleware, (req, res) => {
       WHERE d.event_id = ?
     `).all(eventId);
 
+    const tournament = getTournamentType(event);
+
+    // ===== 瑞士轮赛制 =====
+    if (tournament === 'swiss') {
+      const playerCount = allPlayers.length;
+      const totalRounds = swissTotalRounds(playerCount);
+      const maxRound = db.prepare('SELECT MAX(round) as mr FROM battles WHERE event_id = ?').get(eventId).mr || 0;
+
+      // 所有轮次已打完 -> 按积分决出冠军
+      if (maxRound >= totalRounds) {
+        const st = computeEventStandings(eventId, allPlayers);
+        const arr = Object.values(st).sort((a, b) => b.wins - a.wins || b.gameWins - a.gameWins || a.losses - b.losses);
+        const champ = arr[0];
+        return res.json({ round: maxRound, battles: [], champion: champ ? { id: champ.user_id, name: champ.username } : null, message: champ ? `${champ.username} 以 ${champ.wins} 胜夺冠！` : '赛事结束', tournament_done: true });
+      }
+
+      const nextRound = maxRound + 1;
+      const st = computeEventStandings(eventId, allPlayers);
+      let ranked = Object.values(st).sort((a, b) => b.wins - a.wins || b.gameWins - a.gameWins || a.losses - b.losses);
+
+      // 轮空：奇数人时，排名最低且上一轮未轮空的玩家轮空(不允许连续两轮同一人轮空)
+      const lastBye = getByePlayerOfRound(eventId, maxRound);
+      let byePlayer = null;
+      if (ranked.length % 2 === 1) {
+        for (let i = ranked.length - 1; i >= 0; i--) {
+          if (ranked[i].user_id !== lastBye) { byePlayer = ranked[i]; break; }
+        }
+        if (!byePlayer) byePlayer = ranked[ranked.length - 1];
+        ranked = ranked.filter(p => p.user_id !== byePlayer.user_id);
+      }
+
+      const pastMatchups = getPastMatchups(eventId);
+      const { pairs } = swissPairPlayers(ranked, pastMatchups);
+      const createdBattles = [];
+      pairs.forEach(function(pair) {
+        const a = pair[0], b = pair[1];
+        const id = insertEventBattle(eventId, a.user_id, a.username, b.user_id, b.username, nextRound, 'swiss');
+        if (id) createdBattles.push({ id: id, p1: a.username, p2: b.username, bracket: 'swiss' });
+      });
+      if (byePlayer) {
+        const id = insertEventBattle(eventId, byePlayer.user_id, byePlayer.username, null, null, nextRound, 'swiss');
+        if (id) createdBattles.push({ id: id, p1: byePlayer.username, p2: '轮空晋级', bye: true, bracket: 'swiss' });
+      }
+
+      const done = nextRound >= totalRounds;
+      const result = { round: nextRound, battles: createdBattles, bracket: 'swiss', champion: null, total_rounds: totalRounds, tournament_done: done };
+      if (done) result.message = `第 ${nextRound} 轮（最后一轮）`;
+      console.log(`[next-round/swiss] Event ${eventId}: R${nextRound}/${totalRounds}, ${createdBattles.length} battles`);
+      wsBroadcast(`event:${eventId}`, 'pairing_created', result);
+      return res.json(result);
+    }
+
+    // ===== 单淘汰赛制 =====
+    if (tournament === 'single_elim') {
+      const maxRound = db.prepare('SELECT MAX(round) as mr FROM battles WHERE event_id = ?').get(eventId).mr || 0;
+      // 最新一轮的胜者晋级(含轮空胜)，败者出局
+      const latestBattles = db.prepare('SELECT * FROM battles WHERE event_id = ? AND round = ?').all(eventId, maxRound);
+      const seenW = new Set();
+      const uniqueWinners = [];
+      latestBattles.forEach(function(b) {
+        if (b.winner_id && !seenW.has(b.winner_id)) {
+          seenW.add(b.winner_id);
+          const wp = allPlayers.find(function(p) { return p.user_id === b.winner_id; });
+          uniqueWinners.push({ user_id: b.winner_id, username: wp ? wp.username : '?' });
+        }
+      });
+
+      // 只剩一人(或无人) -> 冠军
+      if (uniqueWinners.length <= 1) {
+        const champ = uniqueWinners[0];
+        return res.json({ round: maxRound, battles: [], champion: champ ? { id: champ.user_id, name: champ.username } : null, message: champ ? `${champ.username} 是冠军！` : '没有足够的玩家', tournament_done: true });
+      }
+
+      const nextRound = maxRound + 1;
+      // 按战绩排种子(胜场>局胜)
+      const st = computeEventStandings(eventId, allPlayers);
+      let ranked = uniqueWinners.map(function(w) {
+        return st[w.user_id] || { user_id: w.user_id, username: w.username, wins: 0, gameWins: 0, losses: 0 };
+      });
+      ranked.sort((a, b) => b.wins - a.wins || b.gameWins - a.gameWins);
+
+      // 轮空：奇数人时，最低种子且上一轮未轮空者轮空(不允许连续两轮同一人轮空)
+      const lastBye = getByePlayerOfRound(eventId, maxRound);
+      let byePlayer = null;
+      if (ranked.length % 2 === 1) {
+        for (let i = ranked.length - 1; i >= 0; i--) {
+          if (ranked[i].user_id !== lastBye) { byePlayer = ranked[i]; break; }
+        }
+        if (!byePlayer) byePlayer = ranked[ranked.length - 1];
+        ranked = ranked.filter(p => p.user_id !== byePlayer.user_id);
+      }
+
+      const createdBattles = [];
+      const pairCount = Math.floor(ranked.length / 2);
+      for (let i = 0; i < pairCount; i++) {
+        const a = ranked[i * 2], b = ranked[i * 2 + 1];
+        const id = insertEventBattle(eventId, a.user_id, a.username, b.user_id, b.username, nextRound, 'winners');
+        if (id) createdBattles.push({ id: id, p1: a.username, p2: b.username, bracket: 'winners' });
+      }
+      if (byePlayer) {
+        const id = insertEventBattle(eventId, byePlayer.user_id, byePlayer.username, null, null, nextRound, 'winners');
+        if (id) createdBattles.push({ id: id, p1: byePlayer.username, p2: '轮空晋级', bye: true, bracket: 'winners' });
+      }
+
+      const result = { round: nextRound, battles: createdBattles, bracket: 'winners', champion: null };
+      console.log(`[next-round/single_elim] Event ${eventId}: R${nextRound}, ${createdBattles.length} battles, ${uniqueWinners.length} winners`);
+      wsBroadcast(`event:${eventId}`, 'pairing_created', result);
+      return res.json(result);
+    }
+
+    // ===== 双败淘汰赛制(原有逻辑) =====
     // Determine current state of the tournament
     const wbBattles = db.prepare("SELECT * FROM battles WHERE event_id = ? AND bracket = 'winners' ORDER BY round DESC").all(eventId);
     const lbBattles = db.prepare("SELECT * FROM battles WHERE event_id = ? AND bracket = 'losers' ORDER BY round DESC").all(eventId);

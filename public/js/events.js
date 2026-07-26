@@ -21,6 +21,7 @@ async function renderEvents(el) {
             <h3>${ev.name}</h3>
             <span class="badge badge-${ev.type}">${ev.type === 'draft' ? '轮抓' : '现开'}</span>
             <span class="badge" style="background:${(ev.settings && ev.settings.format || 'bo3') === 'bo1' ? '#e74c3c' : (ev.settings && ev.settings.format) === 'multiplayer' ? '#9b59b6' : '#3498db'};font-size:0.7rem">${(ev.settings && ev.settings.format || 'bo3') === 'bo1' ? 'BO1' : (ev.settings && ev.settings.format) === 'multiplayer' ? '多人' : 'BO3'}</span>
+            ${(ev.settings && ev.settings.format !== 'multiplayer') ? `<span class="badge" style="background:${(ev.settings.tournament || 'double_elim') === 'swiss' ? '#27ae60' : ev.settings.tournament === 'single_elim' ? '#e67e22' : '#8e44ad'};font-size:0.7rem">${(ev.settings.tournament || 'double_elim') === 'swiss' ? '瑞士轮' : ev.settings.tournament === 'single_elim' ? '单淘汰' : '双败'}</span>` : ''}
             <span class="badge badge-${ev.status === 'waiting' ? 'waiting' : ev.status === 'in_progress' ? 'progress' : 'completed'}">
               ${ev.status === 'waiting' ? '等待中' : ev.status === 'in_progress' ? '进行中' : '已完成'}
             </span>
@@ -85,12 +86,21 @@ async function showCreateEventModal() {
           <small class="text-muted" style="display:block;margin-top:4px">系列模式下，卡包随机14张（含1张地牌位，可为非基本地或基本地）</small>
         </div>
         <div class="form-group">
-          <label>赛制</label>
-          <select id="event-format">
+          <label>对局赛制</label>
+          <select id="event-format" onchange="toggleTournamentStruct()">
             <option value="bo1">BO1 (一局定胜负)</option>
             <option value="bo3" selected>BO3 (三局两胜)</option>
             <option value="multiplayer">多人对战</option>
           </select>
+        </div>
+        <div class="form-group" id="tournament-struct-group">
+          <label>淘汰赛制</label>
+          <select id="event-tournament">
+            <option value="double_elim" selected>双败淘汰</option>
+            <option value="single_elim">单淘汰 (败者出局)</option>
+            <option value="swiss">瑞士轮 (积分制)</option>
+          </select>
+          <small class="text-muted" style="display:block;margin-top:4px">瑞士轮轮次按人数计算(2^(x-1)≤人数≤2^x)；单淘汰败者立即出局，奇数人轮空计胜</small>
         </div>
         <div class="form-group">
           <label>最大人数</label>
@@ -179,15 +189,26 @@ function switchEventMode(mode) {
   if (cppGroup) cppGroup.style.display = mode === 'cube' ? 'block' : 'none';
 }
 
+// 多人对战无淘汰赛制概念，选择多人对战时隐藏淘汰赛制选项
+function toggleTournamentStruct() {
+  var fmt = document.getElementById('event-format');
+  var group = document.getElementById('tournament-struct-group');
+  if (fmt && group) {
+    group.style.display = fmt.value === 'multiplayer' ? 'none' : 'block';
+  }
+}
+
 async function handleCreateEvent(e) {
   e.preventDefault();
   const name = document.getElementById('event-name').value.trim();
   const type = document.getElementById('event-type').value;
+  const fmtVal = document.getElementById('event-format').value || 'bo3';
   const settings = {
     max_players: parseInt(document.getElementById('event-max-players').value) || 8,
     packs_per_player: parseInt(document.getElementById('event-packs').value) || 3,
     cards_per_pick: type === 'draft' ? (parseInt(document.getElementById('event-cards-per-pick').value) || 1) : 1,
-    format: document.getElementById('event-format').value || 'bo3'
+    format: fmtVal,
+    tournament: fmtVal === 'multiplayer' ? '' : (document.getElementById('event-tournament').value || 'double_elim')
   };
 
   var body = { name, type, settings };
@@ -246,6 +267,8 @@ async function renderEventDetail(el, id) {
     const participants = event.participants || [];
     const myParticipation = event.my_participation;
     const settings = event.settings || {};
+    const tournament = settings.tournament || 'double_elim';
+    const tournamentLabel = tournament === 'swiss' ? '瑞士轮' : (tournament === 'single_elim' ? '单淘汰' : '双败淘汰');
     const cardsPerPick = settings.cards_per_pick || 1;
     state.pageData._cardsPerPick = cardsPerPick;
     state.pageData._eventId = id;
@@ -312,11 +335,21 @@ async function renderEventDetail(el, id) {
     const myEliminated = (() => {
       const uid = state.user?.id;
       if (!uid) return false;
+      // 瑞士轮：所有人打满全部轮次，不会被淘汰
+      if (tournament === 'swiss') return false;
       const hasActiveBattle = (eventBattles || []).some(b =>
         (b.status === 'in_progress' || b.status === 'waiting') &&
         (b.player1_id === uid || b.player2_id === uid)
       );
       if (hasActiveBattle) return false;
+      // 单淘汰：输掉任意一场即出局
+      if (tournament === 'single_elim') {
+        return (eventBattles || []).some(b =>
+          b.status === 'completed' && b.winner_id && b.winner_id !== uid &&
+          (b.player1_id === uid || b.player2_id === uid)
+        );
+      }
+      // 双败淘汰：输掉败者组/总决赛才出局
       const lostEliminatingBattle = (eventBattles || []).some(b =>
         b.status === 'completed' && b.winner_id && b.winner_id !== uid &&
         (b.player1_id === uid || b.player2_id === uid) &&
@@ -354,6 +387,7 @@ async function renderEventDetail(el, id) {
           <div style="margin-top:4px">
             <span class="badge badge-${event.type}">${event.type === 'draft' ? '轮抓' : '现开'}</span>
             <span class="badge" style="background:${(settings.format || 'bo3') === 'bo1' ? '#e74c3c' : settings.format === 'multiplayer' ? '#9b59b6' : '#3498db'}">${(settings.format || 'bo3') === 'bo1' ? 'BO1' : settings.format === 'multiplayer' ? '多人对战' : 'BO3'}</span>
+            ${settings.format !== 'multiplayer' ? `<span class="badge" style="background:${tournament === 'swiss' ? '#27ae60' : tournament === 'single_elim' ? '#e67e22' : '#8e44ad'}">${tournamentLabel}</span>` : ''}
             <span class="badge badge-${event.status === 'waiting' ? 'waiting' : event.status === 'in_progress' ? 'progress' : 'completed'}">
               ${event.status === 'waiting' ? '等待中' : event.status === 'in_progress' ? '进行中' : '已完成'}
             </span>
@@ -434,15 +468,15 @@ async function renderEventDetail(el, id) {
               <p class="text-muted" style="margin-bottom:12px">所有玩家构建完牌组后，点击创建多人对战（所有玩家自动加入同一场对战）</p>
               <button class="btn btn-primary" onclick="startMultiplayerBattle(${id})">开始多人对战</button>
             ` : `
-              <h3 style="color:var(--text-bright);margin-bottom:8px">双败淘汰配对</h3>
-              <p class="text-muted" style="margin-bottom:12px">所有玩家构建完牌组后，点击自动配对开始第一轮（胜者组+败者组双败淘汰制）</p>
+              <h3 style="color:var(--text-bright);margin-bottom:8px">${tournamentLabel}配对</h3>
+              <p class="text-muted" style="margin-bottom:12px">${tournament === 'swiss' ? '所有玩家构建完牌组后，点击自动配对开始第一轮（积分制，轮次按人数自动计算）' : tournament === 'single_elim' ? '所有玩家构建完牌组后，点击自动配对开始第一轮（败者立即出局，直到决出冠军）' : '所有玩家构建完牌组后，点击自动配对开始第一轮（胜者组+败者组双败淘汰制）'}</p>
               <button class="btn btn-primary" onclick="autoPairEvent(${id})">自动配对</button>
             `}
           </div>
         ` : isOwner && allBattlesCompleted && settings.format !== 'multiplayer' ? `
           <div style="margin-bottom:24px;padding:16px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);text-align:center">
-            <h3 style="color:var(--text-bright);margin-bottom:8px">所有对战已结束</h3>
-            <p class="text-muted" style="margin-bottom:12px">点击配对下一轮（胜者组/败者组/总决赛自动推进）</p>
+            <h3 style="color:var(--text-bright);margin-bottom:8px">本轮对战已结束</h3>
+            <p class="text-muted" style="margin-bottom:12px">${tournament === 'swiss' ? '点击配对下一轮（按积分就近配对，避免重复交手）' : tournament === 'single_elim' ? '点击配对下一轮（胜者晋级，败者已出局）' : '点击配对下一轮（胜者组/败者组/总决赛自动推进）'}</p>
             <button class="btn btn-primary" onclick="nextRoundEvent(${id})">配对下一轮</button>
           </div>
         ` : ''}
@@ -492,15 +526,24 @@ async function renderEventDetail(el, id) {
               '</div>';
           })()}
           ${(eventBattles || []).some(function(b) { return b.battle_type !== 'multiplayer'; }) ? `
-          <h3 style="color:var(--text-bright);margin-bottom:12px">双败淘汰赛</h3>
+          <h3 style="color:var(--text-bright);margin-bottom:12px">${tournament === 'swiss' ? '瑞士轮对阵' : tournament === 'single_elim' ? '单淘汰对阵' : '双败淘汰赛'}</h3>
           ${[...new Set((eventBattles || []).filter(function(b) { return b.battle_type !== 'multiplayer'; }).map(b => b.round || 1))].sort((a, b) => a - b).map(round => {
             const roundBattles = (eventBattles || []).filter(function(b) { return b.battle_type !== 'multiplayer' && (b.round || 1) === round; });
             const roundDone = roundBattles.every(b => b.status === 'completed');
-            const hasWinners = roundBattles.some(b => b.bracket === 'winners');
-            const hasLosers = roundBattles.some(b => b.bracket === 'losers');
-            const hasFinals = roundBattles.some(b => b.bracket === 'finals');
-            const bracketLabel = hasFinals ? '🏆 总决赛' : (hasWinners && hasLosers ? '胜者组 + 败者组' : hasLosers ? '败者组' : '胜者组');
-            const bracketBadgeColor = hasFinals ? '#d4a043' : (hasLosers ? '#e74c3c' : '#3498db');
+            let bracketLabel, bracketBadgeColor;
+            if (tournament === 'swiss') {
+              bracketLabel = '积分轮';
+              bracketBadgeColor = '#27ae60';
+            } else if (tournament === 'single_elim') {
+              bracketLabel = '淘汰轮';
+              bracketBadgeColor = '#e67e22';
+            } else {
+              const hasWinners = roundBattles.some(b => b.bracket === 'winners');
+              const hasLosers = roundBattles.some(b => b.bracket === 'losers');
+              const hasFinals = roundBattles.some(b => b.bracket === 'finals');
+              bracketLabel = hasFinals ? '🏆 总决赛' : (hasWinners && hasLosers ? '胜者组 + 败者组' : hasLosers ? '败者组' : '胜者组');
+              bracketBadgeColor = hasFinals ? '#d4a043' : (hasLosers ? '#e74c3c' : '#3498db');
+            }
             return `
               <div style="margin-bottom:16px">
                 <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
@@ -511,8 +554,12 @@ async function renderEventDetail(el, id) {
                 <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">
                   ${roundBattles.map(b => {
                     const bBracket = b.bracket || 'winners';
-                    const bBracketLabel = bBracket === 'finals' ? '🏆' : (bBracket === 'losers' ? 'LB' : 'WB');
-                    const bBracketColor = bBracket === 'finals' ? '#d4a043' : (bBracket === 'losers' ? '#e74c3c' : '#3498db');
+                    let bBracketLabel, bBracketColor;
+                    if (bBracket === 'finals') { bBracketLabel = '🏆'; bBracketColor = '#d4a043'; }
+                    else if (bBracket === 'losers') { bBracketLabel = 'LB'; bBracketColor = '#e74c3c'; }
+                    else if (bBracket === 'swiss') { bBracketLabel = 'SW'; bBracketColor = '#27ae60'; }
+                    else if (tournament === 'single_elim') { bBracketLabel = 'SE'; bBracketColor = '#e67e22'; }
+                    else { bBracketLabel = 'WB'; bBracketColor = '#3498db'; }
                     const isBye = !b.player2_id;
                     return `
                     <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
@@ -682,11 +729,12 @@ async function nextRoundEvent(eventId) {
     if (result.champion) {
       showToast(result.message);
     } else {
-      const bracketLabel = result.bracket === 'finals' ? '总决赛' : result.bracket === 'both' ? '胜者组+败者组' : result.bracket === 'losers' ? '败者组' : result.bracket === 'winners' ? '胜者组' : '';
+      const bracketLabel = result.bracket === 'finals' ? '总决赛' : result.bracket === 'both' ? '胜者组+败者组' : result.bracket === 'losers' ? '败者组' : result.bracket === 'swiss' ? '瑞士轮' : result.bracket === 'winners' ? '胜者组' : '';
       var msg = '第' + result.round + '轮';
       if (bracketLabel) msg += '(' + bracketLabel + ')';
       msg += ': 已创建 ' + result.battles.length + ' 场对战';
-      if (result.bye_player) msg += '，' + result.bye_player.name + ' 本轮轮空';
+      const byeInfo = result.bye_player || (result.battles || []).find(function(b) { return b.bye; });
+      if (byeInfo) msg += '，' + (byeInfo.name || byeInfo.p1) + ' 本轮轮空';
       showToast(msg);
     }
     navigate('event-detail', { id: eventId });
