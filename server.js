@@ -475,7 +475,7 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
     name TEXT NOT NULL,
-    type TEXT CHECK(type IN ('draft','sealed')) NOT NULL,
+    type TEXT CHECK(type IN ('draft','sealed','half_draft')) NOT NULL,
     cube_id INTEGER,
     status TEXT DEFAULT 'waiting' CHECK(status IN ('waiting','in_progress','completed')),
     settings TEXT DEFAULT '{}',
@@ -613,6 +613,69 @@ ensureColumn('battles', 'format_type', "format_type TEXT DEFAULT 'normal'");
 ensureColumn('battles', 'player_count', "player_count INTEGER DEFAULT 2");
 ensureColumn('decks', 'outside_game', "outside_game TEXT DEFAULT '[]'");
 ensureColumn('decks', 'column_keys', "column_keys TEXT DEFAULT '[]'");
+
+// Migration: add 'half_draft' to events.type and keep participants FK valid.
+// NOTE: SQLite rewrites child FKs on ALTER TABLE RENAME, so recreating `events`
+// would leave `participants` referencing the dropped old table; we recreate both.
+try {
+  const _evtSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='events'").get();
+  const _partSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='participants'").get();
+  const _evtNeedsMig = _evtSql && _evtSql.sql && !_evtSql.sql.includes('half_draft');
+  const _partBroken = _partSql && _partSql.sql && _partSql.sql.includes('_events_mig_old');
+  if (_evtNeedsMig || _partBroken) {
+    db.pragma('foreign_keys = OFF');
+    db.exec('BEGIN');
+    if (_evtNeedsMig) {
+      const _evtCols = db.prepare("PRAGMA table_info(events)").all().map(c => c.name);
+      const _evtColList = _evtCols.join(', ');
+      db.exec('ALTER TABLE events RENAME TO _events_mig_old');
+      db.exec(`CREATE TABLE events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        type TEXT CHECK(type IN ('draft','sealed','half_draft')) NOT NULL,
+        cube_id INTEGER,
+        status TEXT DEFAULT 'waiting' CHECK(status IN ('waiting','in_progress','completed')),
+        settings TEXT DEFAULT '{}',
+        current_round INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        picks_this_round TEXT DEFAULT '[]',
+        set_code TEXT,
+        set_name TEXT,
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (cube_id) REFERENCES cubes(id)
+      )`);
+      db.exec(`INSERT INTO events (${_evtColList}) SELECT ${_evtColList} FROM _events_mig_old`);
+      db.exec('DROP TABLE _events_mig_old');
+    }
+    // Recreate participants so its FK points at the (new) events table
+    const _partCols = db.prepare("PRAGMA table_info(participants)").all().map(c => c.name);
+    const _partColList = _partCols.join(', ');
+    db.exec('ALTER TABLE participants RENAME TO _participants_mig_old');
+    db.exec(`CREATE TABLE participants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      seat_number INTEGER,
+      pool TEXT DEFAULT '[]',
+      picks TEXT DEFAULT '[]',
+      current_packs TEXT DEFAULT '{}',
+      status TEXT DEFAULT 'joined',
+      bot_state TEXT DEFAULT '{}',
+      FOREIGN KEY (event_id) REFERENCES events(id),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )`);
+    db.exec(`INSERT INTO participants (${_partColList}) SELECT ${_partColList} FROM _participants_mig_old`);
+    db.exec('DROP TABLE _participants_mig_old');
+    db.exec('COMMIT');
+    db.pragma('foreign_keys = ON');
+    console.log('[migration] events/participants migrated for half_draft');
+  }
+} catch (migErr) {
+  console.error('[migration] events half_draft migration failed:', migErr.message);
+  try { db.exec('ROLLBACK'); } catch (_) {}
+  try { db.pragma('foreign_keys = ON'); } catch (_) {}
+}
 
 // Ensure battle_players table exists (for existing databases)
 try {
@@ -1574,7 +1637,7 @@ app.post('/api/events', authMiddleware, (req, res) => {
   try {
     const { name, type, cube_id, set_code, set_name, settings } = req.body;
     if (!name || !type) return res.status(400).json({ error: '名称和类型不能为空' });
-    if (!['draft', 'sealed'].includes(type)) return res.status(400).json({ error: '无效的事件类型' });
+    if (!['draft', 'sealed', 'half_draft'].includes(type)) return res.status(400).json({ error: '无效的事件类型' });
     if (cube_id) {
       // Cubes are shared across all users (GET /api/cubes lists everyone's cubes),
       // so any existing cube can be used to create an event
@@ -1582,11 +1645,12 @@ app.post('/api/events', authMiddleware, (req, res) => {
       if (!cube) return res.status(404).json({ error: 'Cube不存在' });
     }
     if (!cube_id && !set_code) return res.status(400).json({ error: '请选择Cube或万智牌系列' });
+    const isDraftLike = type === 'draft' || type === 'half_draft';
     const defaultSettings = {
-      max_players: type === 'draft' ? 8 : 24,
-      packs_per_player: type === 'draft' ? 3 : 6,
+      max_players: isDraftLike ? 8 : 24,
+      packs_per_player: isDraftLike ? 3 : 6,
       cards_per_pack: 15,
-      cards_per_pick: type === 'draft' ? 1 : 1,
+      cards_per_pick: 1,
       set_code: set_code || null,
       set_name: set_name || null,
       ...settings
@@ -1789,6 +1853,21 @@ function botMakePick(pack, botState) {
   return best;
 }
 
+// 1/2轮抓：机器人要丢掉的牌 = 评分最低的牌
+function botWorstPick(pack, botState) {
+  if (pack.length === 0) return null;
+  let worst = pack[0];
+  let worstScore = Infinity;
+  for (const card of pack) {
+    const score = botScoreCard(card, botState);
+    if (score < worstScore) {
+      worstScore = score;
+      worst = card;
+    }
+  }
+  return worst;
+}
+
 function updateBotState(botState, pickedCard) {
   if (pickedCard && pickedCard.colors && pickedCard.colors.length === 1) {
     const c = pickedCard.colors[0];
@@ -1826,7 +1905,7 @@ app.post('/api/events/:id/start', authMiddleware, async (req, res) => {
       if (cubeCards.length < 45) return res.status(400).json({ error: 'Cube至少需要45张牌' });
     }
 
-    if (event.type === 'draft') {
+    if (event.type === 'draft' || event.type === 'half_draft') {
       const totalPacksNeeded = participants.length * settings.packs_per_player;
       const allPacks = [];
 
@@ -1893,7 +1972,8 @@ app.post('/api/events/:id/start', authMiddleware, async (req, res) => {
     }
 
     const modeLabel = isSeriesMode ? (event.set_name || event.set_code) : 'Cube';
-    res.json({ success: true, message: `${event.type === 'draft' ? '轮抓' : '现开'}已开始！(${modeLabel})` });
+    const typeLabel = event.type === 'draft' ? '轮抓' : (event.type === 'half_draft' ? '1/2轮抓' : '现开');
+    res.json({ success: true, message: `${typeLabel}已开始！(${modeLabel})` });
     wsBroadcast(`event:${req.params.id}`, 'event_updated', { eventId: parseInt(req.params.id) });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1912,6 +1992,7 @@ app.post('/api/events/:id/pick', authMiddleware, (req, res) => {
     if (!event || event.status !== 'in_progress') throw new Error('事件不在进行中');
     const settings = JSON.parse(event.settings);
     const cardsPerPick = settings.cards_per_pick || 1;
+    const isHalfDraft = event.type === 'half_draft';
 
     const participants = db.prepare('SELECT * FROM participants WHERE event_id = ? ORDER BY seat_number').all(req.params.id);
     const myIndex = participants.findIndex(p => p.user_id === req.user.id);
@@ -1949,8 +2030,10 @@ app.post('/api/events/:id/pick', authMiddleware, (req, res) => {
 
     // Allow fewer than cardsPerPick when the pack has fewer cards remaining
     const myCurrentPackLen = allPacks[myIndex].current.length;
-    const maxPickable = Math.min(cardsPerPick, Math.max(1, myCurrentPackLen));
-    if (card_ids.length > maxPickable) {
+    const maxPickable = isHalfDraft ? 1 : Math.min(cardsPerPick, Math.max(1, myCurrentPackLen));
+    if (isHalfDraft) {
+      if (card_ids.length !== 1) throw new Error('1/2轮抓每次需保留1张卡牌');
+    } else if (card_ids.length > maxPickable) {
       throw new Error(`当前包最多可选 ${maxPickable} 张卡牌`);
     }
 
@@ -1974,6 +2057,18 @@ app.post('/api/events/:id/pick', authMiddleware, (req, res) => {
     }
     allPools[myIndex].push(...pickedCards);
     pickedCards.forEach(c => allPicks[myIndex].push({ card: c, from_pack: myPackNumber }));
+    // 1/2轮抓：保留1张后，再丢掉1张（从包中移除，不传递、不入池）
+    if (isHalfDraft) {
+      const discardIds = Array.isArray(req.body.discard_ids) ? req.body.discard_ids : [];
+      if (allPacks[myIndex].current.length >= 1) {
+        if (discardIds.length !== 1) throw new Error('1/2轮抓需选择1张丢掉');
+        const dIdx = allPacks[myIndex].current.findIndex(c => c.id === discardIds[0]);
+        if (dIdx === -1) throw new Error('丢掉的卡牌不在当前卡包中');
+        allPacks[myIndex].current.splice(dIdx, 1); // 丢掉（移除）
+      } else if (discardIds.length !== 0) {
+        throw new Error('当前包已无多余卡牌可丢');
+      }
+    }
     picksThisRound.push(myParticipantId);
 
     // Phase 2: Bots pick from their current pack (auto-picked this round)
@@ -1984,6 +2079,29 @@ app.post('/api/events/:id/pick', authMiddleware, (req, res) => {
       if (!isBot) continue;
       const pack = allPacks[i].current;
       if (pack.length === 0) continue;
+      if (isHalfDraft) {
+        // 1/2轮抓：机器人保留最优1张，丢掉最差1张
+        const botState = allBotStates[i].colorCount ? allBotStates[i] : { colorCount: {} };
+        const bestCard = botMakePick(pack, botState);
+        if (bestCard) {
+          const bIdx = pack.findIndex(c => c.id === bestCard.id);
+          if (bIdx !== -1) {
+            const [card] = pack.splice(bIdx, 1);
+            allPools[i].push(card);
+            allPicks[i].push({ card, from_pack: myPackNumber });
+            allBotStates[i] = updateBotState(allBotStates[i], card);
+          }
+        }
+        if (pack.length > 0) {
+          const worstCard = botWorstPick(pack, botState);
+          if (worstCard) {
+            const wIdx = pack.findIndex(c => c.id === worstCard.id);
+            if (wIdx !== -1) pack.splice(wIdx, 1); // 丢掉（移除）
+          }
+        }
+        botPickThisRound.push(participants[i].id);
+        continue;
+      }
       const numToPick = Math.min(cardsPerPick, pack.length);
       for (let j = 0; j < numToPick; j++) {
         const bestCard = botMakePick(pack, allBotStates[i].colorCount ? allBotStates[i] : { colorCount: {} });
@@ -2118,6 +2236,7 @@ app.post('/api/events/:id/pick', authMiddleware, (req, res) => {
       pending_queue: allPacks[myIndex].pending_queue,
       max_pickable: maxPickable,
       cards_per_pick: cardsPerPick,
+      half_draft: isHalfDraft,
       card_counts: { totals, mismatch: countMismatch }
     };
   });

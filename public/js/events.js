@@ -19,7 +19,7 @@ async function renderEvents(el) {
           <div class="card-item" onclick="navigate('event-detail', {id:${ev.id}})" style="position:relative">
             ${String(ev.user_id) === String(state.user?.id) ? `<button class="btn btn-sm card-delete-btn" onclick="event.stopPropagation();deleteEvent(${ev.id})" title="删除赛事">&times;</button>` : ''}
             <h3>${ev.name}</h3>
-            <span class="badge badge-${ev.type}">${ev.type === 'draft' ? '轮抓' : '现开'}</span>
+            <span class="badge badge-${ev.type}">${ev.type === 'draft' ? '轮抓' : ev.type === 'half_draft' ? '1/2轮抓' : '现开'}</span>
             <span class="badge" style="background:${(ev.settings && ev.settings.format || 'bo3') === 'bo1' ? '#e74c3c' : (ev.settings && ev.settings.format) === 'multiplayer' ? '#9b59b6' : '#3498db'};font-size:0.7rem">${(ev.settings && ev.settings.format || 'bo3') === 'bo1' ? 'BO1' : (ev.settings && ev.settings.format) === 'multiplayer' ? '多人' : 'BO3'}</span>
             ${(ev.settings && ev.settings.format !== 'multiplayer') ? `<span class="badge" style="background:${(ev.settings.tournament || 'double_elim') === 'swiss' ? '#27ae60' : ev.settings.tournament === 'single_elim' ? '#e67e22' : '#8e44ad'};font-size:0.7rem">${(ev.settings.tournament || 'double_elim') === 'swiss' ? '瑞士轮' : ev.settings.tournament === 'single_elim' ? '单淘汰' : '双败'}</span>` : ''}
             <span class="badge badge-${ev.status === 'waiting' ? 'waiting' : ev.status === 'in_progress' ? 'progress' : 'completed'}">
@@ -58,8 +58,10 @@ async function showCreateEventModal() {
           <label>赛事类型</label>
           <select id="event-type" onchange="document.getElementById('cpp-group').style.display=this.value==='draft'?'block':'none'">
             <option value="draft">轮抓 (Draft)</option>
+            <option value="half_draft">1/2轮抓 (选1丢1)</option>
             <option value="sealed">现开 (Sealed)</option>
           </select>
+          <small class="text-muted" style="display:block;margin-top:4px">1/2轮抓：每次抓牌保留1张并丢掉1张，无需设置每次选牌数</small>
         </div>
         <div class="form-group">
           <label>卡牌来源</label>
@@ -271,6 +273,8 @@ async function renderEventDetail(el, id) {
     const tournamentLabel = tournament === 'swiss' ? '瑞士轮' : (tournament === 'single_elim' ? '单淘汰' : '双败淘汰');
     const cardsPerPick = settings.cards_per_pick || 1;
     state.pageData._cardsPerPick = cardsPerPick;
+    state.pageData._halfDraft = (event.type === 'half_draft');
+    window._halfDraftMode = (event.type === 'half_draft');
     state.pageData._eventId = id;
     const isOwner = String(event.user_id) === String(state.user?.id);
     const isParticipant = !!myParticipation;
@@ -385,7 +389,7 @@ async function renderEventDetail(el, id) {
           <button class="btn btn-secondary btn-sm mb-16" onclick="navigate('events')">← 返回</button>
           <h2>${event.name}</h2>
           <div style="margin-top:4px">
-            <span class="badge badge-${event.type}">${event.type === 'draft' ? '轮抓' : '现开'}</span>
+            <span class="badge badge-${event.type}">${event.type === 'draft' ? '轮抓' : event.type === 'half_draft' ? '1/2轮抓' : '现开'}</span>
             <span class="badge" style="background:${(settings.format || 'bo3') === 'bo1' ? '#e74c3c' : settings.format === 'multiplayer' ? '#9b59b6' : '#3498db'}">${(settings.format || 'bo3') === 'bo1' ? 'BO1' : settings.format === 'multiplayer' ? '多人对战' : 'BO3'}</span>
             ${settings.format !== 'multiplayer' ? `<span class="badge" style="background:${tournament === 'swiss' ? '#27ae60' : tournament === 'single_elim' ? '#e67e22' : '#8e44ad'}">${tournamentLabel}</span>` : ''}
             <span class="badge badge-${event.status === 'waiting' ? 'waiting' : event.status === 'in_progress' ? 'progress' : 'completed'}">
@@ -400,6 +404,39 @@ async function renderEventDetail(el, id) {
           ${isOwner ? `<button class="btn btn-danger" onclick="deleteEvent(${id})">删除</button>` : ''}
         </div>
       </div>
+
+      <!-- Draft Picking Panel (active draft) -->
+      ${isParticipant && (isMyTurnToPick || (event.status === 'in_progress' && myParticipation && myParticipation.pool && myParticipation.pool.length > 0)) ? `
+        <div class="draft-redesign" id="draft-redesign">
+          <div class="draft-pick-strip" id="draft-pick-strip">
+            <div class="draft-pick-strip-header" ${!isMyTurnToPick ? 'style="display:none"' : ''}>
+              <h3>${event.type === 'half_draft' ? '1/2轮抓选牌（保留1张 + 丢掉1张）' : (event.type === 'draft' ? '轮抓选牌' : '牌池')}</h3>
+              <div id="draft-confirm-bar" class="hidden" style="display:flex;align-items:center;gap:10px">
+                <span id="draft-selected-count" style="font-size:0.85rem;color:var(--text-muted)">已选: 0 / ${cardsPerPick}</span>
+                <button class="btn btn-primary btn-sm" id="draft-confirm-btn" onclick="confirmDraftPick(${id})" disabled>确认选择</button>
+              </div>
+            </div>
+            <div id="draft-cards-container" class="draft-pick-scroll" ${!isMyTurnToPick ? 'style="display:none"' : ''}></div>
+            ${!isMyTurnToPick ? '<div class="draft-waiting-msg" style="text-align:center;padding:20px 16px;color:var(--warning);font-weight:600;font-size:0.9rem">等待其他玩家选牌...<div class="text-muted" style="font-weight:400;font-size:0.8rem;margin-top:4px">页面会自动刷新</div></div>' : ''}
+          </div>
+          <div class="draft-columns-area" id="draft-columns-area">
+            <div class="draft-columns-header">
+              <span style="color:var(--text-bright);font-size:0.85rem;font-weight:600">已抓到的牌 <span class="text-muted" id="draft-pool-count" style="font-weight:400">${myParticipation && myParticipation.pool ? myParticipation.pool.length : 0}张</span></span>
+            </div>
+            <div class="draft-columns-scroll" id="draft-columns-scroll"></div>
+          </div>
+        </div>
+      ` : (isParticipant && event.status === 'completed' && myParticipation && myParticipation.pool && myParticipation.pool.length > 0) ? `
+        <div class="draft-redesign" id="draft-redesign">
+          <div class="draft-complete-banner" id="draft-complete-banner">轮抓已结束 — 正在自动创建牌组...</div>
+          <div class="draft-columns-area" id="draft-columns-area">
+            <div class="draft-columns-header">
+              <span style="color:var(--text-bright);font-size:0.85rem;font-weight:600">已抓到的牌 <span class="text-muted" style="font-weight:400">${myParticipation.pool.length}张</span></span>
+            </div>
+            <div class="draft-columns-scroll" id="draft-columns-scroll"></div>
+          </div>
+        </div>
+      ` : ''}
 
       <!-- Deck & Battle Section -->
       ${canBuildDeck ? `
@@ -778,6 +815,12 @@ function renderDraftCards(cards, cardsPerPick) {
   const container = document.getElementById('draft-cards-container');
   if (!container) return;
 
+  // 1/2轮抓：选1张保留 + 选1张丢掉
+  if (window._halfDraftMode) {
+    renderHalfDraftCards(cards);
+    return;
+  }
+
   // If cardsPerPick > 1, show the confirm bar
   const confirmBar = document.getElementById('draft-confirm-bar');
   if (confirmBar) {
@@ -838,6 +881,103 @@ function renderDraftCards(cards, cardsPerPick) {
   } else {
     updateDraftConfirmUI(cardsPerPick);
   }
+}
+
+// ===== 1/2轮抓（选1张保留 + 丢1张）=====
+window._halfDraftKeep = null;
+window._halfDraftDiscard = null;
+
+function renderHalfDraftCards(cards) {
+  window._halfDraftKeep = null;
+  window._halfDraftDiscard = null;
+  const container = document.getElementById('draft-cards-container');
+  if (!container) return;
+  const confirmBar = document.getElementById('draft-confirm-bar');
+  if (confirmBar) { confirmBar.classList.remove('hidden'); confirmBar.style.display = 'flex'; }
+  container.innerHTML = '';
+  cards.forEach(card => {
+    const el = createCardElement(card, () => { halfDraftToggleCard(card); });
+    el.setAttribute('data-card-id', card.id);
+    container.appendChild(el);
+  });
+  updateHalfDraftConfirmUI();
+}
+
+function halfDraftToggleCard(card) {
+  const keepId = window._halfDraftKeep && window._halfDraftKeep.id;
+  const discId = window._halfDraftDiscard && window._halfDraftDiscard.id;
+  if (keepId === card.id) {
+    window._halfDraftKeep = null;            // 取消保留
+  } else if (discId === card.id) {
+    window._halfDraftDiscard = null;         // 取消丢掉
+  } else if (!window._halfDraftKeep) {
+    window._halfDraftKeep = card;            // 设为保留
+  } else if (!window._halfDraftDiscard) {
+    window._halfDraftDiscard = card;         // 设为丢掉
+  } else {
+    window._halfDraftKeep = card;            // 两者都已选，替换保留
+    window._halfDraftDiscard = null;
+  }
+  refreshHalfDraftHighlights();
+  updateHalfDraftConfirmUI();
+}
+
+function refreshHalfDraftHighlights() {
+  const container = document.getElementById('draft-cards-container');
+  if (!container) return;
+  const keepId = window._halfDraftKeep && String(window._halfDraftKeep.id);
+  const discId = window._halfDraftDiscard && String(window._halfDraftDiscard.id);
+  container.querySelectorAll('[data-card-id]').forEach(el => {
+    const cid = el.getAttribute('data-card-id');
+    el.classList.remove('selected', 'half-discard');
+    el.style.outline = '';
+    if (cid === keepId) { el.classList.add('selected'); el.style.outline = '3px solid #2ecc71'; }
+    else if (cid === discId) { el.classList.add('half-discard'); el.style.outline = '3px solid #e74c3c'; }
+  });
+}
+
+function updateHalfDraftConfirmUI() {
+  const countEl = document.getElementById('draft-selected-count');
+  const btn = document.getElementById('draft-confirm-btn');
+  const container = document.getElementById('draft-cards-container');
+  const packLen = container ? container.querySelectorAll('[data-card-id]').length : 0;
+  const needDiscard = packLen >= 2;
+  const keepName = window._halfDraftKeep ? window._halfDraftKeep.name : '未选择';
+  const discName = window._halfDraftDiscard ? window._halfDraftDiscard.name : (needDiscard ? '未选择' : '无需丢牌');
+  if (countEl) countEl.innerHTML = '保留: <b style="color:#2ecc71">' + escapeHtml(keepName) + '</b> ｜ 丢掉: <b style="color:#e74c3c">' + escapeHtml(discName) + '</b>';
+  if (btn) {
+    btn.textContent = '确认（保留1 / 丢掉1）';
+    btn.onclick = function() { confirmHalfDraftPick(state.pageData.id || state.pageData); };
+    btn.disabled = !(window._halfDraftKeep && (!needDiscard || window._halfDraftDiscard));
+  }
+}
+
+async function confirmHalfDraftPick(eventId) {
+  if (!window._halfDraftKeep) { showToast('请选择要保留的卡牌', 'error'); return; }
+  const container = document.getElementById('draft-cards-container');
+  const packLen = container ? container.querySelectorAll('[data-card-id]').length : 0;
+  const needDiscard = packLen >= 2;
+  if (needDiscard && !window._halfDraftDiscard) { showToast('请选择要丢掉的卡牌', 'error'); return; }
+  const body = { card_ids: [window._halfDraftKeep.id] };
+  const removeIds = [String(window._halfDraftKeep.id)];
+  if (needDiscard && window._halfDraftDiscard) {
+    body.discard_ids = [window._halfDraftDiscard.id];
+    removeIds.push(String(window._halfDraftDiscard.id));
+  }
+  try {
+    const remainingIds = (window._lastPackIds || []).filter(id => removeIds.indexOf(String(id)) === -1);
+    const result = await api('/api/events/' + eventId + '/pick', { method: 'POST', body: JSON.stringify(body) });
+    if (result.draft_complete) {
+      showToast('轮抓完成！请构建你的牌组');
+      navigate('event-detail', { id: eventId });
+    } else {
+      window._draftWaiting = true;
+      window._lastPackIds = remainingIds;
+      window._halfDraftKeep = null;
+      window._halfDraftDiscard = null;
+      showDraftWaiting(eventId);
+    }
+  } catch (err) { showToast(err.message, 'error'); }
 }
 
 function toggleDraftCardSelection(card, element) {
