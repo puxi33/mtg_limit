@@ -175,9 +175,18 @@ function renderStepTreeNode(node, projectId, depth) {
     ? `<button class="step-toggle" onclick="event.stopPropagation();toggleStepCollapse(${node.id})" title="展开/折叠"><span id="step-arrow-${node.id}">&#9660;</span></button>`
     : `<span class="step-toggle-placeholder"></span>`;
 
-  const checkIcon = node.completed
-    ? '<span class="step-check completed">&#10003;</span>'
-    : `<span class="step-check pending" onclick="event.stopPropagation();toggleStepComplete(${projectId},${node.id},true)" style="cursor:pointer" title="标记完成"></span>`;
+  // 勾选图标：完全按标记状态展示（不再支持手动勾选）。
+  // 叶子节点看自身 completed；父节点看子叶完成比例（getNodeStatus）。
+  const status = getNodeStatus(node);
+  let checkIcon;
+  if (status === 'completed') {
+    checkIcon = '<span class="step-check completed">&#10003;</span>';
+  } else if (status === 'partial') {
+    const pct = childCount.total > 0 ? Math.round((childCount.done / childCount.total) * 100) : 0;
+    checkIcon = `<span class="step-check partial" title="${childCount.done}/${childCount.total} 子项完成" style="background:conic-gradient(var(--success) ${pct}%, var(--border-bright) ${pct}%)"></span>`;
+  } else {
+    checkIcon = '<span class="step-check pending"></span>';
+  }
 
   const badge = isLeaf
     ? `<span class="badge badge-${node.completed ? 'completed' : 'progress'}" style="font-size:0.7rem">${node.completed ? '已完成' : '待执行'}</span>`

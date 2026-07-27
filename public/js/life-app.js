@@ -171,9 +171,23 @@ function renderStepTreeNode(node, projectId, depth) {
   const hasChildren = node.children.length > 0;
   const isLeaf = !hasChildren;
   const status = getNodeStatus(node);
+  const leaves = hasChildren ? countLeaves(node.children) : null;
 
+  // 勾选标记完全按标记状态展示（不再支持手动勾选）；父节点未全部完成时用扇形比例展示进度
   const checkClass = status === 'completed' ? 'done' : (status === 'partial' ? 'partial' : '');
-  const checkContent = status === 'completed' ? '&#10003;' : (status === 'partial' ? '&#9679;' : '');
+  let checkContent = '';
+  let checkStyle = 'cursor:default;';
+  let checkTitle = '';
+  if (status === 'completed') {
+    checkContent = '&#10003;';
+    checkTitle = hasChildren ? '全部子项已完成' : '已完成';
+  } else if (status === 'partial') {
+    const pct = leaves && leaves.total > 0 ? Math.round((leaves.done / leaves.total) * 100) : 0;
+    checkStyle += `background:conic-gradient(var(--mint) ${pct}%, var(--border-light) ${pct}%);`;
+    checkTitle = `${leaves.done}/${leaves.total} 子项完成`;
+  } else {
+    checkTitle = hasChildren ? '尚未开始' : '待完成';
+  }
 
   const toggleBtn = hasChildren
     ? `<button class="icon-btn" onclick="event.stopPropagation();toggleStepCollapse(${node.id})" title="展开/折叠"><span id="step-arrow-${node.id}">&#9660;</span></button>`
@@ -241,7 +255,7 @@ function renderStepTreeNode(node, projectId, depth) {
   return `
     <div class="step-tree-node">
       <div class="step-tree-row">
-        <button class="complete-btn ${checkClass}" onclick="event.stopPropagation();${isLeaf ? `toggleStepComplete(${projectId},${node.id},${!node.completed})` : `toggleStepCollapse(${node.id})`}">${checkContent}</button>
+        <span class="complete-btn ${checkClass}" style="${checkStyle}" title="${checkTitle}">${checkContent}</span>
         <div class="step-tree-content">
           <div class="step-tree-name ${node.completed && isLeaf ? 'completed' : ''}">${escapeHtml(node.name)}</div>
           ${node.remark ? `<div class="step-tree-remark">${escapeHtml(node.remark)}</div>` : ''}

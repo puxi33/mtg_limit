@@ -587,7 +587,7 @@
       border-radius: 50%;
       border: 2px solid var(--border);
       background: white;
-      cursor: pointer;
+      cursor: default;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -596,18 +596,13 @@
       transition: all 0.2s;
       margin-top: 2px;
     }
-    .complete-btn:hover {
-      border-color: var(--mint);
-      background: var(--mint-light);
-    }
     .complete-btn.done {
       border-color: var(--mint);
       background: var(--mint);
       color: white;
     }
     .complete-btn.partial {
-      border-color: var(--peach);
-      background: var(--peach-light);
+      border-color: var(--border);
       color: var(--peach);
     }
 

@@ -4372,10 +4372,9 @@ body.draft-fullscreen #content > .page-header {
   color: transparent;
 }
 
-.step-check.pending:hover {
-  border-color: var(--success);
-  background: rgba(76, 185, 100, 0.15);
-  color: var(--success);
+.step-check.partial {
+  border: 2px solid var(--border-bright);
+  color: transparent;
 }
 
 .step-node-info {
