@@ -1426,6 +1426,40 @@ app.get('/api/cards/search', authMiddleware, async (req, res) => {
   }
 });
 
+// Search Scryfall tokens (for creating token cards with real card art)
+app.get('/api/cards/token-search', authMiddleware, async (req, res) => {
+  try {
+    const q = (req.query.q || '').trim();
+    if (!q) return res.status(400).json({ error: '请输入搜索词' });
+    const query = `${q} layout:token`;
+    const url = `https://api.scryfall.com/cards/search?q=${encodeURIComponent(query)}&order=name`;
+    const response = await fetch(url, {
+      headers: { 'User-Agent': 'MTGLimitedSite/2.0', 'Accept': 'application/json' }
+    });
+    if (!response.ok) {
+      if (response.status === 404) return res.json({ cards: [], total: 0 });
+      const errData = await response.json().catch(() => ({}));
+      return res.status(response.status).json({ error: errData.details || `搜索失败: ${response.status}` });
+    }
+    const data = await response.json();
+    const cards = (data.data || []).slice(0, 24).map(c => {
+      const pt = getCardPowerToughness(c);
+      const img = getCardImageUris(c);
+      return {
+        id: c.id, name: c.name, type: c.type_line || '', colors: c.colors || [],
+        power: pt.power, toughness: pt.toughness,
+        text: getCardText(c), manaCost: getCardManaCost(c),
+        image: img ? img.normal : null,
+        image_small: img ? img.small : null,
+        set: c.set || '', set_name: c.set_name || ''
+      };
+    });
+    res.json({ cards, total: data.total_cards || cards.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Batch search cards by name (uses Scryfall /cards/collection for efficiency)
 app.post('/api/cards/batch-search', authMiddleware, async (req, res) => {
   try {
@@ -3950,13 +3984,15 @@ function processGameAction(gs, userId, action) {
       return { success: true };
     }
     case 'create_token': {
-      const { name, power, toughness, colors, is_creature, is_custom } = action;
+      const { name, power, toughness, colors, is_creature, is_custom, image, image_small, type_line, oracle_text, mana_cost } = action;
       const tokenName = name || '衍生物';
       const isCreature = is_creature !== false; // default true
 
-      var tokenImage = null;
-      // Only assign images for preset tokens, not custom ones
-      if (!is_custom) {
+      // 优先使用搜索到的真实卡图；否则对预设衍生物使用本地预设图
+      var tokenImage = image_small || image || null;
+      var tokenImageNormal = image || null;
+      // Only assign preset images for preset tokens (not custom, not searched-with-image)
+      if (!tokenImage && !is_custom) {
         const TOKEN_IMAGES = {
           '1/1': '/images/tokens/soldier-1-1.jpg',
           '2/2': '/images/tokens/zombie-2-2.jpg',
@@ -3988,8 +4024,8 @@ function processGameAction(gs, userId, action) {
       const token = {
         id: 'token_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
         name: tokenName,
-        type: isCreature ? 'Token Creature' : 'Token',
-        type_line: isCreature ? '衍生物 ～ 生物' : '衍生物',
+        type: type_line || (isCreature ? 'Token Creature' : 'Token'),
+        type_line: type_line || (isCreature ? '衍生物 ～ 生物' : '衍生物'),
         power: isCreature ? String(power || 1) : null,
         toughness: isCreature ? String(toughness || 1) : null,
         colors: colors || [],
@@ -3998,9 +4034,10 @@ function processGameAction(gs, userId, action) {
         tapped: false,
         counters: {},
         damage_marked: 0,
-        mana_cost: '',
-        oracle_text: '',
-        image_uris: null,
+        mana_cost: mana_cost || '',
+        oracle_text: oracle_text || '',
+        image_uris: tokenImageNormal ? { normal: tokenImageNormal, small: tokenImage || tokenImageNormal } : null,
+        image: tokenImageNormal,
         image_small: tokenImage
       };
       me.battlefield.push(token);

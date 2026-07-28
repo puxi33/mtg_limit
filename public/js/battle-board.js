@@ -483,12 +483,19 @@ function showBattlefieldContextMenu(e, playerKey, battleId) {
   }
 
   addLabel('创建衍生物');
-  addTokenItem('1/1 生物', 1, 1, true);
-  addTokenItem('2/2 生物', 2, 2, true);
-  addTokenItem('3/3 生物', 3, 3, true);
-  addTokenItem('4/4 生物', 4, 4, true);
-  addSeparator();
-  addTokenItem('非生物衍生物', null, null, false);
+
+  // 搜索衍生物（主入口）：搜索 Scryfall token 并用真实卡图创建
+  var searchDiv = document.createElement('div');
+  searchDiv.className = 'ctx-menu-item';
+  var searchSpan = document.createElement('span');
+  searchSpan.textContent = '🔍 搜索衍生物...';
+  searchDiv.appendChild(searchSpan);
+  searchDiv.addEventListener('click', function(ev) {
+    ev.stopPropagation();
+    hideContextMenu();
+    showTokenSearchModal(battleId);
+  });
+  menu.appendChild(searchDiv);
   addSeparator();
 
   // Custom token option

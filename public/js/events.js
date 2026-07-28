@@ -290,6 +290,13 @@ async function renderEventDetail(el, id) {
 
     const isMyTurnToPick = currentPack.length > 0 && event.status === 'in_progress' && isParticipant;
 
+    // 我的抓牌是否已完成（仅限轮抓类：已有牌池，且当前包/队列/待处理队列均为空）
+    const isDraftType = event.type === 'draft' || event.type === 'half_draft';
+    const myDraftDone = isDraftType && isParticipant && hasPool && (() => {
+      const pd = (myParticipation && myParticipation.current_packs) || {};
+      return (pd.current || []).length === 0 && (pd.queue || []).length === 0 && (pd.pending_queue || []).length === 0;
+    })();
+
     // Calculate standings from battles
     const standings = {};
     participants.forEach(p => {
@@ -405,13 +412,17 @@ async function renderEventDetail(el, id) {
         </div>
       </div>
 
-      <!-- Draft Picking Panel (active draft) -->
-      ${isParticipant && (isMyTurnToPick || (event.status === 'in_progress' && myParticipation && myParticipation.pool && myParticipation.pool.length > 0)) ? `
+      <!-- Draft Picking Panel -->
+      ${myDraftDone ? `
+        <div class="draft-redesign draft-done" id="draft-redesign">
+          <div class="draft-complete-banner" id="draft-complete-banner">✅ 你的抓牌已完成${myDeck ? '' : '，等待所有玩家完成抓牌后自动创建牌组'}</div>
+        </div>
+      ` : isParticipant && (isMyTurnToPick || (event.status === 'in_progress' && myParticipation && myParticipation.pool && myParticipation.pool.length > 0)) ? `
         <div class="draft-redesign" id="draft-redesign">
           <div class="draft-pick-strip" id="draft-pick-strip">
             <div class="draft-pick-strip-header" ${!isMyTurnToPick ? 'style="display:none"' : ''}>
               <h3>${event.type === 'half_draft' ? '1/2轮抓选牌（保留1张 + 丢掉1张）' : (event.type === 'draft' ? '轮抓选牌' : '牌池')}</h3>
-              <div id="draft-confirm-bar" class="hidden" style="display:flex;align-items:center;gap:10px">
+              <div id="draft-confirm-bar" style="display:flex;align-items:center;gap:10px">
                 <span id="draft-selected-count" style="font-size:0.85rem;color:var(--text-muted)">已选: 0 / ${cardsPerPick}</span>
                 <button class="btn btn-primary btn-sm" id="draft-confirm-btn" onclick="confirmDraftPick(${id})" disabled>确认选择</button>
               </div>
@@ -427,14 +438,8 @@ async function renderEventDetail(el, id) {
           </div>
         </div>
       ` : (isParticipant && event.status === 'completed' && myParticipation && myParticipation.pool && myParticipation.pool.length > 0) ? `
-        <div class="draft-redesign" id="draft-redesign">
+        <div class="draft-redesign draft-done" id="draft-redesign">
           <div class="draft-complete-banner" id="draft-complete-banner">轮抓已结束 — 正在自动创建牌组...</div>
-          <div class="draft-columns-area" id="draft-columns-area">
-            <div class="draft-columns-header">
-              <span style="color:var(--text-bright);font-size:0.85rem;font-weight:600">已抓到的牌 <span class="text-muted" style="font-weight:400">${myParticipation.pool.length}张</span></span>
-            </div>
-            <div class="draft-columns-scroll" id="draft-columns-scroll"></div>
-          </div>
         </div>
       ` : ''}
 
@@ -687,8 +692,8 @@ async function renderEventDetail(el, id) {
       ` : ''}
     `;
 
-    // Full-screen mode for deck overview redesign
-    if (el.querySelector('#deck-overview-redesign')) {
+    // Full-screen mode: pick area / deck overview fills the full screen width (no side margins)
+    if (el.querySelector('#deck-overview-redesign') || el.querySelector('#draft-redesign')) {
       document.body.classList.add('draft-fullscreen');
     }
 
@@ -821,15 +826,11 @@ function renderDraftCards(cards, cardsPerPick) {
     return;
   }
 
-  // If cardsPerPick > 1, show the confirm bar
+  // 确认条：pick1 也需要先选中再点击确认提交（与多选 / 1-2轮抓保持一致）
   const confirmBar = document.getElementById('draft-confirm-bar');
   if (confirmBar) {
-    if (cardsPerPick > 1) {
-      confirmBar.classList.remove('hidden');
-      confirmBar.style.display = 'flex';
-    } else {
-      confirmBar.classList.add('hidden');
-    }
+    confirmBar.classList.remove('hidden');
+    confirmBar.style.display = 'flex';
   }
   // Reset confirm button text
   var confirmBtnReset = document.getElementById('draft-confirm-btn');
@@ -843,11 +844,8 @@ function renderDraftCards(cards, cardsPerPick) {
     const el = createCardElement(card, () => {
       if (isStaged) return; // staged cards don't respond to clicks
       if (cardsPerPick <= 1) {
-        // Single pick: flash highlight then auto-confirm
-        el.classList.add('selected', 'single-pick-flash');
-        setTimeout(() => {
-          confirmDraftPickSingle(state.pageData.id || state.pageData, [card.id]);
-        }, 250);
+        // pick1：选中该张（单选），再由确认条提交
+        selectSingleDraftCard(card, el);
       } else {
         toggleDraftCardSelection(card, el);
       }
@@ -978,6 +976,22 @@ async function confirmHalfDraftPick(eventId) {
       showDraftWaiting(eventId);
     }
   } catch (err) { showToast(err.message, 'error'); }
+}
+
+function selectSingleDraftCard(card, element) {
+  const container = document.getElementById('draft-cards-container');
+  const alreadySelected = draftSelectedCards.some(c => c.id === card.id);
+  // 清空之前的选中（单选模式）
+  draftSelectedCards = [];
+  if (container) {
+    container.querySelectorAll('.selected').forEach(e => e.classList.remove('selected'));
+  }
+  if (!alreadySelected) {
+    draftSelectedCards.push(card);
+    element.classList.add('selected');
+  }
+  const cardsPerPick = (state.pageData && state.pageData._cardsPerPick) || 1;
+  updateDraftConfirmUI(cardsPerPick);
 }
 
 function toggleDraftCardSelection(card, element) {

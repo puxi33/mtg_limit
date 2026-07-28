@@ -4024,6 +4024,19 @@ body.draft-fullscreen #content > .page-header {
   gap: 0;
 }
 
+/* Banner-only completion state: no full-screen height, compact card */
+.draft-redesign.draft-done {
+  min-height: 0;
+  margin-bottom: 16px;
+}
+.draft-redesign.draft-done .draft-complete-banner {
+  border-bottom: none;
+  border: 1px solid var(--success);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  font-size: 0.95rem;
+}
+
 /* Upper: pick strip */
 .draft-pick-strip {
   flex-shrink: 0;
