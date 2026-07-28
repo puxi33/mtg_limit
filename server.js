@@ -1442,18 +1442,21 @@ app.get('/api/cards/token-search', authMiddleware, async (req, res) => {
       return res.status(response.status).json({ error: errData.details || `搜索失败: ${response.status}` });
     }
     const data = await response.json();
-    const cards = (data.data || []).slice(0, 24).map(c => {
-      const pt = getCardPowerToughness(c);
-      const img = getCardImageUris(c);
-      return {
-        id: c.id, name: c.name, type: c.type_line || '', colors: c.colors || [],
-        power: pt.power, toughness: pt.toughness,
-        text: getCardText(c), manaCost: getCardManaCost(c),
-        image: img ? img.normal : null,
-        image_small: img ? img.small : null,
-        set: c.set || '', set_name: c.set_name || ''
-      };
-    });
+    const cards = (data.data || [])
+      .filter(c => c.layout === 'token' || c.layout === 'double_faced_token' || (c.type_line || '').includes('Token'))
+      .slice(0, 24)
+      .map(c => {
+        const pt = getCardPowerToughness(c);
+        const img = getCardImageUris(c);
+        return {
+          id: c.id, name: c.name, type: c.type_line || '', colors: c.colors || [],
+          power: pt.power, toughness: pt.toughness,
+          text: getCardText(c), manaCost: getCardManaCost(c),
+          image: img ? img.normal : null,
+          image_small: img ? img.small : null,
+          set: c.set || '', set_name: c.set_name || ''
+        };
+      });
     res.json({ cards, total: data.total_cards || cards.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -4042,6 +4045,36 @@ function processGameAction(gs, userId, action) {
       };
       me.battlefield.push(token);
       gs.log.push(me.name + ' 创建了一个 ' + tokenName + (isCreature ? ' (' + token.power + '/' + token.toughness + ')' : ''));
+      return { success: true };
+    }
+    case 'copy_permanent': {
+      const { card_id } = action;
+      if (!card_id) return { error: '缺少参数' };
+      const found = findCardInBattlefield(me, card_id);
+      if (!found.card) return { error: '战场上没有此牌' };
+      const src = found.card;
+      const isCreature = (src.type || '').toLowerCase().includes('creature');
+      const copy = {
+        id: 'token_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+        name: src.name,
+        type: src.type || (isCreature ? 'Token Creature' : 'Token'),
+        type_line: src.type_line || src.type || (isCreature ? '衍生物 ～ 生物' : '衍生物'),
+        power: src.power != null ? src.power : (isCreature ? '1' : null),
+        toughness: src.toughness != null ? src.toughness : (isCreature ? '1' : null),
+        colors: Array.isArray(src.colors) ? src.colors.slice() : [],
+        is_token: true,
+        is_creature: isCreature,
+        tapped: false,
+        counters: {},
+        damage_marked: 0,
+        mana_cost: src.mana_cost || '',
+        oracle_text: src.oracle_text || '',
+        image_uris: src.image_uris || (src.image ? { normal: src.image, small: src.image_small || src.image } : null),
+        image: src.image || null,
+        image_small: src.image_small || null
+      };
+      me.battlefield.push(copy);
+      gs.log.push(me.name + ' 创造了 ' + src.name + ' 的复制衍生物');
       return { success: true };
     }
     case 'toggle_token_type': {

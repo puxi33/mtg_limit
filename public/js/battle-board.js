@@ -425,6 +425,21 @@ function showContextMenu(e, cardId, card, playerKey, battleId) {
     menu.appendChild(div);
   })();
 
+  // Create a token copy of this permanent
+  (function() {
+    var div = document.createElement('div');
+    div.className = 'ctx-menu-item';
+    var span = document.createElement('span');
+    span.textContent = '\u{1F4CB} 创造复制衍生物';
+    div.appendChild(span);
+    div.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      hideContextMenu();
+      mtgaAction(battleId, { type: 'copy_permanent', card_id: cardId });
+    });
+    menu.appendChild(div);
+  })();
+
   document.body.appendChild(menu);
 
   // Position menu at cursor, keep within viewport
@@ -951,6 +966,85 @@ function submitCustomToken(battleId) {
   var isCreature = document.getElementById('token-is-creature').checked;
   closeModal();
   mtgaAction(battleId, { type: 'create_token', name: name, power: power, toughness: toughness, is_creature: isCreature, is_custom: true });
+}
+
+// ============================================================
+// Token Search Modal (search Scryfall tokens, create with real art)
+// ============================================================
+function showTokenSearchModal(battleId) {
+  var html = '<div style="display:flex;flex-direction:column;gap:12px;padding:4px 0">'
+    + '<div style="display:flex;gap:8px">'
+    + '<input id="token-search-input" type="text" placeholder="搜索衍生物，如 Soldier、Zombie、Treasure..." style="flex:1;padding:8px 12px;background:rgba(30,40,60,0.6);border:1px solid rgba(100,120,160,0.3);border-radius:4px;color:#e0e4f0;font-size:0.9rem" onkeydown="if(event.key===\'Enter\')runTokenSearch(' + battleId + ')">'
+    + '<button class="btn btn-primary" onclick="runTokenSearch(' + battleId + ')">搜索</button>'
+    + '</div>'
+    + '<div id="token-search-results" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;max-height:52vh;overflow-y:auto;padding:4px">'
+    + '<div style="grid-column:1/-1;text-align:center;color:rgba(160,180,200,0.6);padding:24px 0;font-size:0.85rem">输入关键词搜索衍生物，点击卡图即可创建</div>'
+    + '</div>'
+    + '</div>';
+  showModal('搜索衍生物', html);
+  setTimeout(function() { var inp = document.getElementById('token-search-input'); if (inp) inp.focus(); }, 100);
+}
+
+async function runTokenSearch(battleId) {
+  var input = document.getElementById('token-search-input');
+  var resultsEl = document.getElementById('token-search-results');
+  if (!input || !resultsEl) return;
+  var q = input.value.trim();
+  if (!q) { showToast('请输入搜索词', 'error'); return; }
+  resultsEl.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:rgba(160,180,200,0.6);padding:24px 0;font-size:0.85rem">搜索中...</div>';
+  try {
+    var res = await api('/api/cards/token-search?q=' + encodeURIComponent(q));
+    var cards = res.cards || [];
+    if (cards.length === 0) {
+      resultsEl.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:rgba(160,180,200,0.6);padding:24px 0;font-size:0.85rem">未找到相关衍生物</div>';
+      return;
+    }
+    resultsEl.innerHTML = '';
+    cards.forEach(function(card) {
+      var item = document.createElement('div');
+      item.style.cssText = 'cursor:pointer;border-radius:6px;overflow:hidden;border:2px solid transparent;transition:border-color 0.15s;background:rgba(20,30,50,0.5)';
+      item.title = card.name + (card.power ? ' (' + card.power + '/' + card.toughness + ')' : '');
+      if (card.image_small || card.image) {
+        var img = document.createElement('img');
+        img.src = card.image_small || card.image;
+        img.alt = card.name;
+        img.style.cssText = 'width:100%;display:block;border-radius:4px';
+        img.loading = 'lazy';
+        item.appendChild(img);
+      } else {
+        var ph = document.createElement('div');
+        ph.style.cssText = 'padding:16px 8px;text-align:center;font-size:0.75rem;color:rgba(200,210,230,0.8)';
+        ph.textContent = card.name;
+        item.appendChild(ph);
+      }
+      item.addEventListener('mouseenter', function() { item.style.borderColor = '#2ecc71'; });
+      item.addEventListener('mouseleave', function() { item.style.borderColor = 'transparent'; });
+      item.addEventListener('click', function() { createTokenFromCard(battleId, card); });
+      resultsEl.appendChild(item);
+    });
+  } catch (err) {
+    resultsEl.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:#e74c3c;padding:24px 0;font-size:0.85rem">搜索失败: ' + escapeHtml(err.message) + '</div>';
+  }
+}
+
+function createTokenFromCard(battleId, card) {
+  var isCreature = (card.type || '').toLowerCase().includes('creature');
+  closeModal();
+  mtgaAction(battleId, {
+    type: 'create_token',
+    name: card.name,
+    power: card.power != null ? card.power : null,
+    toughness: card.toughness != null ? card.toughness : null,
+    colors: card.colors || [],
+    is_creature: isCreature,
+    is_custom: true,
+    image: card.image,
+    image_small: card.image_small,
+    type_line: card.type,
+    oracle_text: card.text,
+    mana_cost: card.manaCost
+  });
+  showToast('已创建衍生物: ' + card.name);
 }
 
 // ============================================================
