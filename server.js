@@ -3280,6 +3280,27 @@ app.post('/api/battles/:id/next-game', authMiddleware, (req, res) => {
         if (isP1) battle.player1_deck = JSON.stringify(deckObj);
         else battle.player2_deck = JSON.stringify(deckObj);
       }
+    } else if (battle.event_id) {
+      // No explicit updated_deck: re-read the player's latest event deck from the decks table.
+      // This handles the case where the user edited their deck from the event-detail page
+      // (saved to the decks table) but the battles table still has the old deck.
+      const isP1 = String(battle.player1_id) === String(req.user.id);
+      const isP2 = String(battle.player2_id) === String(req.user.id);
+      if (isP1 || isP2) {
+        const latestDeck = db.prepare('SELECT * FROM decks WHERE event_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 1').get(battle.event_id, req.user.id);
+        if (latestDeck) {
+          const deckObj = {
+            name: latestDeck.name || '',
+            main_deck: JSON.parse(latestDeck.main_deck || '[]'),
+            sideboard: JSON.parse(latestDeck.sideboard || '[]'),
+            outside_game: JSON.parse(latestDeck.outside_game || '[]')
+          };
+          const col = isP1 ? 'player1_deck' : 'player2_deck';
+          db.prepare(`UPDATE battles SET ${col} = ? WHERE id = ?`).run(JSON.stringify(deckObj), battle.id);
+          if (isP1) battle.player1_deck = JSON.stringify(deckObj);
+          else battle.player2_deck = JSON.stringify(deckObj);
+        }
+      }
     }
 
     battle.player1_deck = JSON.parse(typeof battle.player1_deck === 'string' ? battle.player1_deck : '{}');
