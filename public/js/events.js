@@ -1513,7 +1513,62 @@ function renderDraftColumns() {
 
   scrollEl.innerHTML = '';
 
+  // In deck mode, render Sideboard as a horizontal strip above columns
+  var sbStripEl = document.getElementById('deck-sideboard-cards');
+  var sbCountEl = document.getElementById('deck-sideboard-count');
+  if (sbStripEl && _columnMode === 'deck') {
+    var sbCards = cols['Sideboard'] || [];
+    if (sbCountEl) sbCountEl.textContent = sbCards.length + '张';
+    sbStripEl.innerHTML = '';
+    if (sbCards.length === 0) {
+      sbStripEl.innerHTML = '<span style="color:var(--text-muted);font-size:0.75rem;padding:4px 8px">拖拽卡牌到此处作为备牌</span>';
+    } else {
+      sbCards.forEach(function(card) {
+        var cardEl = createCardElement(card, null);
+        cardEl.className = 'mtg-card draft-column-card';
+        cardEl.style.width = '80px';
+        cardEl.style.flexShrink = '0';
+        cardEl.setAttribute('draggable', 'true');
+        cardEl.setAttribute('data-card-id', card.id);
+        cardEl.setAttribute('data-column', 'Sideboard');
+        cardEl.addEventListener('dragstart', function(e) {
+          e.dataTransfer.setData('text/plain', JSON.stringify({ cardId: card.id, fromColumn: 'Sideboard' }));
+          e.dataTransfer.effectAllowed = 'move';
+          cardEl.classList.add('dragging');
+          setTimeout(function() { cardEl.style.opacity = '0.4'; }, 0);
+        });
+        cardEl.addEventListener('dragend', function() {
+          cardEl.classList.remove('dragging');
+          cardEl.style.opacity = '';
+        });
+        sbStripEl.appendChild(cardEl);
+      });
+    }
+    // Make the strip a drop target
+    sbStripEl.ondragover = function(e) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; sbStripEl.style.outline = '2px dashed var(--success)'; };
+    sbStripEl.ondragleave = function() { sbStripEl.style.outline = ''; };
+    sbStripEl.ondrop = function(e) {
+      e.preventDefault();
+      sbStripEl.style.outline = '';
+      try {
+        var data = JSON.parse(e.dataTransfer.getData('text/plain'));
+        if (data.fromColumn === 'Sideboard') return;
+        var fromCol = cols[data.fromColumn];
+        if (!fromCol) return;
+        var idx = fromCol.findIndex(function(c) { return c.id === data.cardId; });
+        if (idx === -1) return;
+        var movedCard = fromCol.splice(idx, 1)[0];
+        if (!cols['Sideboard']) cols['Sideboard'] = [];
+        cols['Sideboard'].push(movedCard);
+        if (_columnMode === 'deck') { _saveDeckColumns(); } else { _saveDraftColumns(); }
+        renderDraftColumns();
+      } catch (err) {}
+    };
+  }
+
   _draftColumnKeys.forEach(function(key, keyIdx) {
+    // Skip Sideboard in vertical columns when in deck mode (rendered as horizontal strip above)
+    if (key === 'Sideboard' && _columnMode === 'deck') return;
     var cards = cols[key] || [];
     var colEl = document.createElement('div');
     colEl.className = 'draft-column' + (key === 'Sideboard' ? ' sideboard' : '');
