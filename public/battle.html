@@ -68,10 +68,19 @@
       content: '';
       position: absolute;
       bottom: 0;
-      left: 10%;
-      right: 10%;
+      left: 8%;
+      right: 8%;
       height: 1px;
       background: linear-gradient(90deg, transparent, rgba(100, 120, 180, 0.15), transparent);
+    }
+    /* Prominent glowing divider between the two players */
+    #opp-battlefield::after {
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, rgba(120, 150, 220, 0.45) 12%, rgba(185, 208, 255, 0.95) 50%, rgba(120, 150, 220, 0.45) 88%, transparent);
+      box-shadow: 0 0 12px rgba(120, 150, 220, 0.5), 0 0 4px rgba(185, 208, 255, 0.6);
+      z-index: 6;
     }
 
     /* Zones: no borders, subtle backgrounds */
@@ -203,34 +212,53 @@
       text-shadow: 0 0 20px rgba(212, 160, 67, 0.3);
     }
 
-    /* Library stack */
+    /* Library: 3D card-back pile using the classic card back */
     .mtga-library-stack {
       cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 2px 6px;
-      border-radius: 4px;
-      transition: background 0.2s;
+      position: relative;
+      width: 46px;
+      height: 64px;
+      flex-shrink: 0;
+      margin: 2px 10px 8px 2px;
+      transition: transform 0.18s ease;
     }
     .mtga-library-stack:hover {
-      background: rgba(40, 50, 80, 0.4);
+      transform: translateY(-3px);
     }
     .mtga-lib-card {
-      width: 24px;
-      height: 32px;
-      background: linear-gradient(135deg, #1a2540, #253560);
-      border: 1px solid rgba(80, 100, 150, 0.3);
-      border-radius: 3px;
-      position: relative;
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 46px;
+      height: 64px;
+      background: url('/images/back.png') center / 100% 100% no-repeat;
+      border-radius: 5px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
     }
-    .mtga-lib-card:not(:first-child) {
-      margin-left: -18px;
-    }
+    /* 3D stack: each layer offset down-right to reveal pile depth */
+    .mtga-lib-card:nth-child(1) { transform: translate(0, 0); z-index: 5; }
+    .mtga-lib-card:nth-child(2) { transform: translate(2px, 2px); z-index: 4; }
+    .mtga-lib-card:nth-child(3) { transform: translate(4px, 4px); z-index: 3; }
+    .mtga-lib-card:nth-child(4) { transform: translate(6px, 6px); z-index: 2; }
+    .mtga-lib-card:nth-child(5) { transform: translate(8px, 8px); z-index: 1; }
     .mtga-lib-count {
-      font-size: 0.75rem;
-      font-weight: 700;
-      color: rgba(180, 190, 210, 0.7);
+      position: absolute;
+      top: -7px;
+      right: -7px;
+      z-index: 10;
+      min-width: 20px;
+      height: 20px;
+      padding: 0 5px;
+      background: rgba(18, 26, 46, 0.95);
+      border: 1.5px solid rgba(150, 180, 240, 0.65);
+      border-radius: 10px;
+      color: #eaf0fd;
+      font-size: 0.78rem;
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
     }
 
     /* Hide nav */
@@ -386,19 +414,21 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 2px;
-      padding: 4px;
-      background: rgba(10, 14, 26, 0.7);
-      border-radius: 6px;
-      border: 1px solid rgba(80, 100, 140, 0.15);
+      gap: 3px;
+      padding: 6px;
+      background: rgba(10, 14, 26, 0.85);
+      border-radius: 8px;
+      border: 1.5px solid rgba(120, 140, 180, 0.35);
       cursor: pointer;
       transition: all 0.2s;
-      min-width: 64px;
+      min-width: 90px;
     }
+    .zone-overlay .mtg-card { width: 76px !important; }
     .zone-overlay:hover {
-      background: rgba(20, 28, 50, 0.85);
-      border-color: rgba(212, 160, 67, 0.3);
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+      background: rgba(20, 28, 50, 0.92);
+      border-color: rgba(212, 160, 67, 0.5);
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+      transform: translateY(-1px);
     }
     .zone-overlay.drop-target {
       background: rgba(212, 160, 67, 0.12);
@@ -406,18 +436,25 @@
       box-shadow: 0 0 12px rgba(212, 160, 67, 0.25);
     }
     .zone-overlay-count {
-      font-size: 0.7rem;
-      font-weight: 700;
-      color: rgba(200, 210, 230, 0.8);
+      font-size: 0.95rem;
+      font-weight: 800;
+      color: rgba(225, 232, 245, 0.95);
       line-height: 1;
     }
     .zone-overlay-label {
-      font-size: 0.55rem;
-      color: rgba(160, 170, 195, 0.4);
+      font-size: 0.62rem;
+      color: rgba(175, 185, 210, 0.75);
       text-transform: uppercase;
-      letter-spacing: 0.05em;
-      font-weight: 600;
+      letter-spacing: 0.06em;
+      font-weight: 700;
     }
+    /* Zone-specific accent colors */
+    .zone-overlay[id$="-graveyard"] { border-color: rgba(155, 165, 185, 0.55); }
+    .zone-overlay[id$="-graveyard"] .zone-overlay-label { color: rgba(190, 200, 220, 0.9); }
+    .zone-overlay[id$="-exile"] { border-color: rgba(235, 120, 90, 0.6); }
+    .zone-overlay[id$="-exile"] .zone-overlay-label { color: rgba(245, 150, 120, 0.95); }
+    .zone-overlay[id$="-outside_game"] { border-color: rgba(110, 185, 205, 0.55); }
+    .zone-overlay[id$="-outside_game"] .zone-overlay-label { color: rgba(150, 205, 225, 0.95); }
 
     /* Modal overlay */
     .modal-overlay {
