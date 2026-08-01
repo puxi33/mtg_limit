@@ -1467,6 +1467,9 @@ function renderBattleBoard(el, battle, battleId, myKey, oppKey) {
   var gs = battle.game_state;
   var me = gs.players[myKey];
   var opp = gs.players[oppKey];
+  // Fallback: inject avatar from battle-level SQL join if game state lacks it
+  if (me && !me.avatar) me.avatar = (myKey === 'p1' ? battle.player1_avatar : battle.player2_avatar) || (state.user && state.user.avatar) || '';
+  if (opp && !opp.avatar) opp.avatar = (oppKey === 'p1' ? battle.player1_avatar : battle.player2_avatar) || '';
   var isMyTurn = gs.activePlayer === myKey;
   var isMultiplayer = gs.isMultiplayer || state.isMultiplayer;
   var allPlayerKeys = state.allPlayerKeys || Object.keys(gs.players);
@@ -1536,19 +1539,22 @@ function renderBattleBoard(el, battle, battleId, myKey, oppKey) {
     '<div class="mtga-board" id="mtga-board">' +
       '<!-- Opponent info -->' +
       '<div class="mtga-info-bar">' +
-        '<div class="mtga-player-name">' + escapeHtml(opp?.name || 'Opponent') + (isMultiplayer ? ' <span style="font-size:0.7rem;color:var(--text-muted)">(查看中)</span>' : '') + '</div>' +
-        '<div class="mtga-life-group">' +
-          '<button class="life-btn life-btn-minus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',-5)" title="-5">-5</button>' +
-          '<button class="life-btn life-btn-minus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',-2)" title="-2">-2</button>' +
-          '<button class="life-btn life-btn-minus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',-1)" title="-1">-1</button>' +
-          '<div class="mtga-life ' + ((opp?.life || 20) <= 5 ? 'low' : '') + '">' + (opp?.life ?? 20) + '</div>' +
-          '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',1)" title="+1">+1</button>' +
-          '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',2)" title="+2">+2</button>' +
-          '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',5)" title="+5">+5</button>' +
+        '<div class="mtga-stat">Hand <span class="num">' + (opp?.hand || []).length + '</span></div>' +
+        '<div class="mtga-player-center">' +
+          '<div class="mtga-avatar-sm">' + (opp?.avatar ? '<img src="' + opp.avatar + '">' : '<span>' + (opp?.name || 'O')[0].toUpperCase() + '</span>') + '</div>' +
+          '<div class="mtga-player-name">' + escapeHtml(opp?.name || 'Opponent') + '</div>' +
+          '<div class="mtga-life-group">' +
+            '<button class="life-btn life-btn-minus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',-5)" title="-5">-5</button>' +
+            '<button class="life-btn life-btn-minus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',-2)" title="-2">-2</button>' +
+            '<button class="life-btn life-btn-minus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',-1)" title="-1">-1</button>' +
+            '<div class="mtga-life ' + ((opp?.life || 20) <= 5 ? 'low' : '') + '">' + (opp?.life ?? 20) + '</div>' +
+            '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',1)" title="+1">+1</button>' +
+            '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',2)" title="+2">+2</button>' +
+            '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',5)" title="+5">+5</button>' +
+          '</div>' +
         '</div>' +
         renderRollResultHtml(gs) +
         renderToolboxHtml(battleId, true) +
-        '<div class="mtga-stat">Hand <span class="num">' + (opp?.hand || []).length + '</span></div>' +
         '<div class="mtga-stat" style="margin-left:auto">Library ' + (opp?.library || []).length + '</div>' +
         renderLibraryStack((opp?.library || []).length, 'opp-library') +
       '</div>' +
@@ -1576,15 +1582,18 @@ function renderBattleBoard(el, battle, battleId, myKey, oppKey) {
       '</div>' +
       '<!-- My info -->' +
       '<div class="mtga-info-bar">' +
-        '<div class="mtga-player-name">' + escapeHtml(me?.name || state.user?.username || 'Me') + '</div>' +
-        '<div class="mtga-life-group">' +
-          '<button class="life-btn life-btn-minus" onclick="mtgaQuickLife(' + battleId + ',\'self\',-5)" title="-5">-5</button>' +
-          '<button class="life-btn life-btn-minus" onclick="mtgaQuickLife(' + battleId + ',\'self\',-2)" title="-2">-2</button>' +
-          '<button class="life-btn life-btn-minus" onclick="mtgaQuickLife(' + battleId + ',\'self\',-1)" title="-1">-1</button>' +
-          '<div class="mtga-life ' + ((me?.life || 20) <= 5 ? 'low' : '') + '">' + (me?.life ?? 20) + '</div>' +
-          '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'self\',1)" title="+1">+1</button>' +
-          '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'self\',2)" title="+2">+2</button>' +
-          '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'self\',5)" title="+5">+5</button>' +
+        '<div class="mtga-player-center">' +
+          '<div class="mtga-avatar-sm">' + (me?.avatar ? '<img src="' + me.avatar + '">' : '<span>' + (me?.name || state.user?.username || 'M')[0].toUpperCase() + '</span>') + '</div>' +
+          '<div class="mtga-player-name">' + escapeHtml(me?.name || state.user?.username || 'Me') + '</div>' +
+          '<div class="mtga-life-group">' +
+            '<button class="life-btn life-btn-minus" onclick="mtgaQuickLife(' + battleId + ',\'self\',-5)" title="-5">-5</button>' +
+            '<button class="life-btn life-btn-minus" onclick="mtgaQuickLife(' + battleId + ',\'self\',-2)" title="-2">-2</button>' +
+            '<button class="life-btn life-btn-minus" onclick="mtgaQuickLife(' + battleId + ',\'self\',-1)" title="-1">-1</button>' +
+            '<div class="mtga-life ' + ((me?.life || 20) <= 5 ? 'low' : '') + '">' + (me?.life ?? 20) + '</div>' +
+            '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'self\',1)" title="+1">+1</button>' +
+            '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'self\',2)" title="+2">+2</button>' +
+            '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'self\',5)" title="+5">+5</button>' +
+          '</div>' +
         '</div>' +
         renderRollResultHtml(gs) +
         renderToolboxHtml(battleId, false) +

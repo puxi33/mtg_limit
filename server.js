@@ -613,6 +613,8 @@ ensureColumn('battles', 'format_type', "format_type TEXT DEFAULT 'normal'");
 ensureColumn('battles', 'player_count', "player_count INTEGER DEFAULT 2");
 ensureColumn('decks', 'outside_game', "outside_game TEXT DEFAULT '[]'");
 ensureColumn('decks', 'column_keys', "column_keys TEXT DEFAULT '[]'");
+ensureColumn('users', 'nickname', "nickname TEXT DEFAULT ''");
+ensureColumn('users', 'avatar', "avatar TEXT DEFAULT ''");
 
 // Migration: add 'half_draft' to events.type and keep participants FK valid.
 // NOTE: SQLite rewrites child FKs on ALTER TABLE RENAME, so recreating `events`
@@ -1147,35 +1149,55 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 app.get('/api/auth/me', authMiddleware, (req, res) => {
-  const user = db.prepare('SELECT id, username, role, created_at FROM users WHERE id = ?').get(req.user.id);
+  const user = db.prepare('SELECT id, username, nickname, avatar, role, created_at FROM users WHERE id = ?').get(req.user.id);
   if (!user) return res.status(404).json({ error: '用户不存在' });
   const role = user.role || 'user';
   const token = jwt.sign({ id: user.id, username: user.username, role }, JWT_SECRET, { expiresIn: '7d' });
   res.cookie('auth_token', token, {
     httpOnly: true, sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000
   });
-  res.json({ token, user: { id: user.id, username: user.username, role } });
+  res.json({ token, user: { id: user.id, username: user.username, nickname: user.nickname || '', avatar: user.avatar || '', role } });
 });
 
 // ============================================================
 // User Routes
 // ============================================================
 app.get('/api/me', authMiddleware, (req, res) => {
-  const user = db.prepare('SELECT id, username, role, created_at FROM users WHERE id = ?').get(req.user.id);
+  const user = db.prepare('SELECT id, username, nickname, avatar, role, created_at FROM users WHERE id = ?').get(req.user.id);
   if (!user) return res.status(404).json({ error: '用户不存在' });
-  res.json({ ...user, role: user.role || 'user' });
+  res.json({ ...user, nickname: user.nickname || '', avatar: user.avatar || '', role: user.role || 'user' });
 });
 
 app.put('/api/me', authMiddleware, (req, res) => {
   try {
-    const { username } = req.body;
-    if (username && username.length >= 2) {
-      const existing = db.prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(username, req.user.id);
-      if (existing) return res.status(409).json({ error: '用户名已被使用' });
-      db.prepare('UPDATE users SET username = ? WHERE id = ?').run(username, req.user.id);
+    const { nickname, avatar } = req.body;
+    if (nickname !== undefined) {
+      db.prepare('UPDATE users SET nickname = ? WHERE id = ?').run(nickname.slice(0, 30), req.user.id);
     }
-    const user = db.prepare('SELECT id, username, created_at FROM users WHERE id = ?').get(req.user.id);
-    res.json(user);
+    if (avatar !== undefined) {
+      // avatar is a base64 data URL string, limit to 500KB
+      if (avatar.length > 500000) return res.status(400).json({ error: '头像文件过大（最大500KB）' });
+      db.prepare('UPDATE users SET avatar = ? WHERE id = ?').run(avatar, req.user.id);
+    }
+    const user = db.prepare('SELECT id, username, nickname, avatar, role, created_at FROM users WHERE id = ?').get(req.user.id);
+    res.json({ ...user, role: user.role || 'user' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/me/password', authMiddleware, (req, res) => {
+  try {
+    const { old_password, new_password } = req.body;
+    if (!old_password || !new_password) return res.status(400).json({ error: '请输入旧密码和新密码' });
+    if (new_password.length < 4) return res.status(400).json({ error: '新密码至少4个字符' });
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+    if (!user || !bcrypt.compareSync(old_password, user.password_hash)) {
+      return res.status(401).json({ error: '旧密码不正确' });
+    }
+    const hash = bcrypt.hashSync(new_password, 10);
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, req.user.id);
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2439,7 +2461,7 @@ app.delete('/api/decks/:id', authMiddleware, (req, res) => {
 // ============================================================
 app.get('/api/battles', authMiddleware, (req, res) => {
   const battles = db.prepare(`
-    SELECT b.*, u1.username as player1_name, u2.username as player2_name
+    SELECT b.*, COALESCE(NULLIF(u1.nickname,''), u1.username) as player1_name, u1.avatar as player1_avatar, COALESCE(NULLIF(u2.nickname,''), u2.username) as player2_name, u2.avatar as player2_avatar
     FROM battles b
     LEFT JOIN users u1 ON b.player1_id = u1.id
     LEFT JOIN users u2 ON b.player2_id = u2.id
@@ -2452,7 +2474,7 @@ app.get('/api/battles', authMiddleware, (req, res) => {
 // Get battles for a specific event
 app.get('/api/events/:id/battles', authMiddleware, (req, res) => {
   const battles = db.prepare(`
-    SELECT b.*, u1.username as player1_name, u2.username as player2_name
+    SELECT b.*, COALESCE(NULLIF(u1.nickname,''), u1.username) as player1_name, u1.avatar as player1_avatar, COALESCE(NULLIF(u2.nickname,''), u2.username) as player2_name, u2.avatar as player2_avatar
     FROM battles b
     LEFT JOIN users u1 ON b.player1_id = u1.id
     LEFT JOIN users u2 ON b.player2_id = u2.id
@@ -3076,7 +3098,7 @@ app.post('/api/battles', authMiddleware, (req, res) => {
       battleId, req.user.id, JSON.stringify(deckData)
     );
     const battle = db.prepare(`
-      SELECT b.*, u1.username as player1_name FROM battles b
+      SELECT b.*, COALESCE(NULLIF(u1.nickname,''), u1.username) as player1_name, u1.avatar as player1_avatar FROM battles b
       LEFT JOIN users u1 ON b.player1_id = u1.id WHERE b.id = ?
     `).get(battleId);
     battle.player1_deck = JSON.parse(battle.player1_deck);
@@ -3094,7 +3116,7 @@ app.post('/api/battles', authMiddleware, (req, res) => {
 
 app.get('/api/battles/:id', authMiddleware, (req, res) => {
   const battle = db.prepare(`
-    SELECT b.*, u1.username as player1_name, u2.username as player2_name
+    SELECT b.*, COALESCE(NULLIF(u1.nickname,''), u1.username) as player1_name, u1.avatar as player1_avatar, COALESCE(NULLIF(u2.nickname,''), u2.username) as player2_name, u2.avatar as player2_avatar
     FROM battles b
     LEFT JOIN users u1 ON b.player1_id = u1.id
     LEFT JOIN users u2 ON b.player2_id = u2.id
@@ -3173,7 +3195,7 @@ app.post('/api/battles/:id/join', authMiddleware, (req, res) => {
     }
 
     const updated = db.prepare(`
-      SELECT b.*, u1.username as player1_name, u2.username as player2_name
+      SELECT b.*, COALESCE(NULLIF(u1.nickname,''), u1.username) as player1_name, u1.avatar as player1_avatar, COALESCE(NULLIF(u2.nickname,''), u2.username) as player2_name, u2.avatar as player2_avatar
       FROM battles b LEFT JOIN users u1 ON b.player1_id = u1.id LEFT JOIN users u2 ON b.player2_id = u2.id
       WHERE b.id = ?
     `).get(battle.id);
@@ -3193,7 +3215,7 @@ app.post('/api/battles/:id/join', authMiddleware, (req, res) => {
 app.post('/api/battles/:id/start', authMiddleware, (req, res) => {
   try {
     const battle = db.prepare(`
-      SELECT b.*, u1.username as player1_name, u2.username as player2_name
+      SELECT b.*, COALESCE(NULLIF(u1.nickname,''), u1.username) as player1_name, u1.avatar as player1_avatar, COALESCE(NULLIF(u2.nickname,''), u2.username) as player2_name, u2.avatar as player2_avatar
       FROM battles b LEFT JOIN users u1 ON b.player1_id = u1.id LEFT JOIN users u2 ON b.player2_id = u2.id
       WHERE b.id = ?
     `).get(req.params.id);
@@ -3253,7 +3275,7 @@ app.get('/api/battles/:id/my-deck', authMiddleware, (req, res) => {
 app.post('/api/battles/:id/next-game', authMiddleware, (req, res) => {
   try {
     const battle = db.prepare(`
-      SELECT b.*, u1.username as player1_name, u2.username as player2_name
+      SELECT b.*, COALESCE(NULLIF(u1.nickname,''), u1.username) as player1_name, u1.avatar as player1_avatar, COALESCE(NULLIF(u2.nickname,''), u2.username) as player2_name, u2.avatar as player2_avatar
       FROM battles b LEFT JOIN users u1 ON b.player1_id = u1.id LEFT JOIN users u2 ON b.player2_id = u2.id
       WHERE b.id = ?
     `).get(req.params.id);
@@ -3495,12 +3517,12 @@ function initializeGameState(battle) {
     activePlayer: firstPlayer,
     players: {
       p1: {
-        userId: battle.player1_id, name: battle.player1_name,
+        userId: battle.player1_id, name: battle.player1_name, avatar: battle.player1_avatar || '',
         life: 20, library: p1Deck, hand: p1Hand,
         battlefield: [], graveyard: [], exile: [], outside_game: p1Outside
       },
       p2: {
-        userId: battle.player2_id, name: battle.player2_name,
+        userId: battle.player2_id, name: battle.player2_name, avatar: battle.player2_avatar || '',
         life: 20, library: p2Deck, hand: p2Hand,
         battlefield: [], graveyard: [], exile: [], outside_game: p2Outside
       }
@@ -4161,7 +4183,7 @@ function processGameAction(gs, userId, action) {
 app.post('/api/battles/:id/action', authMiddleware, (req, res) => {
   try {
     const battle = db.prepare(`
-      SELECT b.*, u1.username as player1_name, u2.username as player2_name
+      SELECT b.*, COALESCE(NULLIF(u1.nickname,''), u1.username) as player1_name, u1.avatar as player1_avatar, COALESCE(NULLIF(u2.nickname,''), u2.username) as player2_name, u2.avatar as player2_avatar
       FROM battles b LEFT JOIN users u1 ON b.player1_id = u1.id LEFT JOIN users u2 ON b.player2_id = u2.id
       WHERE b.id = ?
     `).get(req.params.id);
