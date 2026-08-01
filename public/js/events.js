@@ -1476,7 +1476,6 @@ function renderDraftColumns() {
   // Pre-compute name groups per column — rendering stacks one element per group,
   // so overlap must be based on group count, not raw card count
   var columnGroups = {};
-  var maxGroups = 0;
   _draftColumnKeys.forEach(function(k) {
     var cards = cols[k] || [];
     var groups = [];
@@ -1490,7 +1489,6 @@ function renderDraftColumns() {
       groupMap[nameKey].push(card);
     });
     columnGroups[k] = groups;
-    if (groups.length > maxGroups) maxGroups = groups.length;
   });
 
   // Calculate dimensions — actual card width excludes column body padding (8px each side)
@@ -1498,18 +1496,24 @@ function renderDraftColumns() {
   var colWidth = Math.max(110, scrollEl.clientWidth / colCount);
   var cardH = Math.max(60, (colWidth - 16) * 7 / 5);
 
-  // Calculate overlap based on viewport constraint
+  // Calculate overlap per column so moving cards only affects the involved columns
   var rect = scrollEl.getBoundingClientRect();
   var viewportAvail = Math.max(200, window.innerHeight - (rect.top || 0) - 20);
   var headerH = 36;
   var bodyH = viewportAvail - headerH;
-  var cardOverlap = 0;
-  if (maxGroups > 1) {
-    var fitOverlap = (cardH * maxGroups - bodyH) / (maxGroups - 1);
-    cardOverlap = Math.max(0, fitOverlap);
-    // Keep at least 20% of each card visible
-    cardOverlap = Math.min(cardOverlap, cardH * 0.8);
-  }
+  var columnOverlap = {};
+  _draftColumnKeys.forEach(function(k) {
+    if (k === 'Sideboard' && _columnMode === 'deck') return;
+    var groups = columnGroups[k] || [];
+    var overlap = 0;
+    if (groups.length > 1) {
+      var fitOverlap = (cardH * groups.length - bodyH) / (groups.length - 1);
+      overlap = Math.max(0, fitOverlap);
+      // Keep at least 20% of each card visible
+      overlap = Math.min(overlap, cardH * 0.8);
+    }
+    columnOverlap[k] = overlap;
+  });
 
   scrollEl.innerHTML = '';
 
@@ -1523,23 +1527,48 @@ function renderDraftColumns() {
     if (sbCards.length === 0) {
       sbStripEl.innerHTML = '<span style="color:var(--text-muted);font-size:0.75rem;padding:4px 8px">拖拽卡牌到此处作为备牌</span>';
     } else {
+      // Group identical sideboard cards into stacks
+      var sbGroups = [];
+      var sbGroupMap = {};
       sbCards.forEach(function(card) {
-        var cardEl = createCardElement(card, null);
+        var nameKey = card.name || String(card.id);
+        if (!sbGroupMap[nameKey]) {
+          sbGroupMap[nameKey] = [];
+          sbGroups.push({ name: nameKey, cards: sbGroupMap[nameKey] });
+        }
+        sbGroupMap[nameKey].push(card);
+      });
+      sbGroups.forEach(function(group) {
+        var card = group.cards[0];
+        var count = group.cards.length;
+        var cardEl = createCardElement(card, function() {
+          moveOneCardFromSideboard(card.id);
+        });
         cardEl.className = 'mtg-card draft-column-card';
-        cardEl.style.width = '80px';
+        cardEl.style.setProperty('width', '80px', 'important');
         cardEl.style.flexShrink = '0';
+        cardEl.style.position = 'relative';
         cardEl.setAttribute('draggable', 'true');
         cardEl.setAttribute('data-card-id', card.id);
         cardEl.setAttribute('data-column', 'Sideboard');
+
+        // Count badge for stacked identical cards
+        if (count > 1) {
+          var badge = document.createElement('div');
+          badge.className = 'draft-col-card-count';
+          badge.textContent = 'x' + count;
+          cardEl.appendChild(badge);
+        }
+
         cardEl.addEventListener('dragstart', function(e) {
           e.dataTransfer.setData('text/plain', JSON.stringify({ cardId: card.id, fromColumn: 'Sideboard' }));
           e.dataTransfer.effectAllowed = 'move';
-          cardEl.classList.add('dragging');
-          setTimeout(function() { cardEl.style.opacity = '0.4'; }, 0);
+          if (count > 1) {
+            _setStackDragImage(e, cardEl);
+          }
         });
         cardEl.addEventListener('dragend', function() {
-          cardEl.classList.remove('dragging');
-          cardEl.style.opacity = '';
+          document.querySelectorAll('.draft-column.drag-over').forEach(function(el) { el.classList.remove('drag-over'); });
         });
         sbStripEl.appendChild(cardEl);
       });
@@ -1594,13 +1623,20 @@ function renderDraftColumns() {
         var card = group.cards[0]; // representative card for display
         var count = group.cards.length;
 
-        var cardEl = createCardElement(card, null);
+        var cardEl = createCardElement(card, function() {
+          if (key === 'Sideboard') {
+            moveOneCardFromSideboard(card.id);
+          } else {
+            moveOneCardToSideboard(card.id, key);
+          }
+        });
         cardEl.className = 'mtg-card draft-column-card';
         cardEl.style.width = '100%';
         cardEl.setAttribute('draggable', 'true');
         cardEl.setAttribute('data-card-id', card.id);
         cardEl.setAttribute('data-column', key);
         cardEl.style.zIndex = groupIdx + 1;
+        var cardOverlap = columnOverlap[key] || 0;
         if (groupIdx < groups.length - 1) {
           cardEl.style.marginBottom = -cardOverlap + 'px';
         }
@@ -1617,12 +1653,11 @@ function renderDraftColumns() {
         cardEl.addEventListener('dragstart', function(e) {
           e.dataTransfer.setData('text/plain', JSON.stringify({ cardId: card.id, fromColumn: key }));
           e.dataTransfer.effectAllowed = 'move';
-          cardEl.classList.add('dragging');
-          setTimeout(function() { cardEl.style.opacity = '0.4'; }, 0);
+          if (count > 1) {
+            _setStackDragImage(e, cardEl);
+          }
         });
         cardEl.addEventListener('dragend', function() {
-          cardEl.classList.remove('dragging');
-          cardEl.style.opacity = '';
           document.querySelectorAll('.draft-column.drag-over').forEach(function(el) { el.classList.remove('drag-over'); });
         });
 
@@ -1762,10 +1797,67 @@ function handleDraftColumnDrop(cardId, fromColumn, toColumn) {
   var card = fromArr.splice(cardIdx, 1)[0];
   if (!cols[toColumn]) cols[toColumn] = [];
   cols[toColumn].push(card);
-  _setManualPlacement(card.id, toColumn);
+  if (toColumn !== 'Sideboard') {
+    _setManualPlacement(card.id, toColumn);
+  }
   _removeEmptyCustomColumns();
   if (_columnMode === 'deck') { _saveDeckColumns(); } else { _saveDraftColumns(); }
   renderDraftColumns();
+}
+
+function moveOneCardToSideboard(cardId, fromColumn) {
+  var cols = _getColumns();
+  if (!cols) return;
+  var fromArr = cols[fromColumn] || [];
+  var cardIdx = -1;
+  for (var i = 0; i < fromArr.length; i++) {
+    if (String(fromArr[i].id) === String(cardId)) { cardIdx = i; break; }
+  }
+  if (cardIdx < 0) return;
+  var card = fromArr.splice(cardIdx, 1)[0];
+  if (!cols['Sideboard']) cols['Sideboard'] = [];
+  cols['Sideboard'].push(card);
+  _removeEmptyCustomColumns();
+  if (_columnMode === 'deck') { _saveDeckColumns(); } else { _saveDraftColumns(); }
+  renderDraftColumns();
+}
+
+function moveOneCardFromSideboard(cardId) {
+  var cols = _getColumns();
+  if (!cols) return;
+  var sbArr = cols['Sideboard'] || [];
+  var cardIdx = -1;
+  for (var i = 0; i < sbArr.length; i++) {
+    if (String(sbArr[i].id) === String(cardId)) { cardIdx = i; break; }
+  }
+  if (cardIdx < 0) return;
+  var card = sbArr.splice(cardIdx, 1)[0];
+  var manual = _getManualPlacements();
+  var targetCol = manual[String(card.id)];
+  if (!targetCol || targetCol === 'Sideboard') {
+    targetCol = getDraftCardColumn(card);
+  }
+  if (!cols[targetCol]) cols[targetCol] = [];
+  cols[targetCol].push(card);
+  _removeEmptyCustomColumns();
+  if (_columnMode === 'deck') { _saveDeckColumns(); } else { _saveDraftColumns(); }
+  renderDraftColumns();
+}
+
+function _setStackDragImage(e, sourceEl) {
+  var dragImg = sourceEl.cloneNode(true);
+  dragImg.style.setProperty('width', sourceEl.offsetWidth + 'px', 'important');
+  dragImg.style.setProperty('height', sourceEl.offsetHeight + 'px', 'important');
+  dragImg.style.setProperty('margin', '0', 'important');
+  dragImg.style.setProperty('position', 'fixed', 'important');
+  dragImg.style.setProperty('top', '-1000px', 'important');
+  dragImg.style.setProperty('left', '-1000px', 'important');
+  dragImg.style.setProperty('opacity', '1', 'important');
+  dragImg.style.setProperty('transform', 'none', 'important');
+  dragImg.querySelectorAll('.draft-col-card-count').forEach(function(b) { b.remove(); });
+  document.body.appendChild(dragImg);
+  e.dataTransfer.setDragImage(dragImg, sourceEl.offsetWidth / 2, sourceEl.offsetHeight / 2);
+  setTimeout(function() { if (dragImg.parentNode) dragImg.parentNode.removeChild(dragImg); }, 0);
 }
 
 function renderReadOnlyDeckColumns(containerId, deck) {
