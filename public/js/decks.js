@@ -540,7 +540,7 @@ function renderDeckDetailUI(el) {
         '<button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck(\'Swamp\')" style="min-width:70px">沼泽 +1</button>' +
         '<button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck(\'Mountain\')" style="min-width:70px">山脉 +1</button>' +
         '<button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck(\'Forest\')" style="min-width:70px">树林 +1</button>' +
-        '<button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck(\'Wastes\')" style="min-width:70px">方片 +1</button>' +
+        '<button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck(\'Wastes\')" style="min-width:70px">荒野 +1</button>' +
         '<span id="basic-land-counts" class="text-muted" style="font-size:0.8rem;margin-left:auto"></span>' +
       '</div>' +
       '<!-- Card Search -->' +
@@ -1263,7 +1263,7 @@ async function renderDeckBuilder(el, params) {
           <button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck('Swamp')" style="min-width:70px">沼泽 +1</button>
           <button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck('Mountain')" style="min-width:70px">山脉 +1</button>
           <button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck('Forest')" style="min-width:70px">树林 +1</button>
-          <button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck('Wastes')" style="min-width:70px">方片 +1</button>
+          <button class="btn btn-secondary btn-sm" onclick="addBasicLandToDeck('Wastes')" style="min-width:70px">荒野 +1</button>
           <span id="basic-land-counts" class="text-muted" style="font-size:0.8rem;margin-left:auto"></span>
         </div>
 
@@ -1579,11 +1579,11 @@ function handleDeckDrop(data, toZoneId) {
 
 // Add basic land to main deck
 var BASIC_LANDS = {
-  Plains:  { name: 'Plains',  type: 'Basic Land — Plains',  image_small: '/images/tokens/plains.jpg',  colors: ['W'] },
-  Island:  { name: 'Island',  type: 'Basic Land — Island',  image_small: '/images/tokens/island.jpg',  colors: ['U'] },
-  Swamp:   { name: 'Swamp',   type: 'Basic Land — Swamp',   image_small: '/images/tokens/swamp.jpg',   colors: ['B'] },
-  Mountain:{ name: 'Mountain',type: 'Basic Land — Mountain', image_small: '/images/tokens/mountain.jpg',colors: ['R'] },
-  Forest:  { name: 'Forest',  type: 'Basic Land — Forest',  image_small: '/images/tokens/forest.jpg',  colors: ['G'] },
+  Plains:  { name: 'Plains',  type: 'Basic Land — Plains',  image_small: 'https://cards.scryfall.io/small/front/8/2/82283c22-9b64-4f41-a5bb-aeb737eee5c9.jpg',  colors: ['W'] },
+  Island:  { name: 'Island',  type: 'Basic Land — Island',  image_small: 'https://cards.scryfall.io/small/front/1/5/15303b22-ddf0-488d-b07e-a118f35ef00f.jpg',  colors: ['U'] },
+  Swamp:   { name: 'Swamp',   type: 'Basic Land — Swamp',   image_small: 'https://cards.scryfall.io/small/front/f/3/f3c850b9-d014-4cd1-8ffd-361ed4fe1e6d.jpg',  colors: ['B'] },
+  Mountain:{ name: 'Mountain',type: 'Basic Land — Mountain', image_small: 'https://cards.scryfall.io/small/front/9/e/9e1170a5-e5bb-4b86-8718-f75eec679b4e.jpg',  colors: ['R'] },
+  Forest:  { name: 'Forest',  type: 'Basic Land — Forest',  image_small: 'https://cards.scryfall.io/small/front/f/1/f1488e6b-f677-44c5-8ff3-6a2f9bdb28c2.jpg',  colors: ['G'] },
   Wastes:  { name: 'Wastes',  type: 'Basic Land — Wastes',  image_small: 'https://cards.scryfall.io/small/front/b/a/baf8f4f2-9f25-4cd2-8d78-1041e134aeac.jpg',  colors: [] }
 };
 
@@ -1631,7 +1631,7 @@ function updateDeckBasicLandCounts() {
     var n = c.name || '';
     counts[n] = (counts[n] || 0) + 1;
   });
-  var landNames = { Plains: '平原', Island: '海岛', Swamp: '沼泽', Mountain: '山脉', Forest: '树林', Wastes: '方片' };
+  var landNames = { Plains: '平原', Island: '海岛', Swamp: '沼泽', Mountain: '山脉', Forest: '树林', Wastes: '荒野' };
   var parts = [];
   ['Plains','Island','Swamp','Mountain','Forest','Wastes'].forEach(function(k) {
     if (counts[k]) parts.push((landNames[k] || k) + ':' + counts[k]);
