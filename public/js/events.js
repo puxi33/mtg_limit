@@ -1496,9 +1496,12 @@ function renderDraftColumns() {
   var colWidth = Math.max(110, scrollEl.clientWidth / colCount);
   var cardH = Math.max(60, (colWidth - 16) * 7 / 5);
 
-  // Calculate overlap per column so moving cards only affects the involved columns
+  // Calculate overlap per column so moving cards only affects the involved columns.
+  // Use document-relative top (stable) instead of viewport-relative rect.top, so the
+  // layout doesn't change depending on the current page scroll position.
   var rect = scrollEl.getBoundingClientRect();
-  var viewportAvail = Math.max(200, window.innerHeight - (rect.top || 0) - 20);
+  var docTop = (rect.top || 0) + window.scrollY;
+  var viewportAvail = Math.max(200, window.innerHeight - docTop - 20);
   var headerH = 36;
   var bodyH = viewportAvail - headerH;
   var columnOverlap = {};
@@ -1636,9 +1639,10 @@ function renderDraftColumns() {
         cardEl.setAttribute('data-card-id', card.id);
         cardEl.setAttribute('data-column', key);
         cardEl.style.zIndex = groupIdx + 1;
-        var cardOverlap = columnOverlap[key] || 0;
+        // Overlap (fold) is already clamped to 0.8*cardH, and the placeholder keeps
+        // every card at full cardH height, so stacking always grows top-to-bottom.
         if (groupIdx < groups.length - 1) {
-          cardEl.style.marginBottom = -cardOverlap + 'px';
+          cardEl.style.marginBottom = -(columnOverlap[key] || 0) + 'px';
         }
 
         // Count badge for stacked identical cards

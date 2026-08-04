@@ -84,7 +84,10 @@ function createCardElement(card, onClick) {
 
   if (card.image || card.image_small) {
     var imgSrc = card.image_small || card.image;
-    div.innerHTML = '<img src="' + imgSrc + '" alt="' + escapeHtml(card.name) + '" class="mtg-card-image" loading="lazy"' +
+    // Placeholder keeps the card at full 5:7 height (name shown on top) until the
+    // image finishes loading; the image is layered on top and covers it once loaded.
+    div.innerHTML = '<div class="mtg-card-placeholder"><div class="mtg-card-ph-name">' + escapeHtml(card.name) + '</div></div>' +
+      '<img src="' + imgSrc + '" alt="" class="mtg-card-image" loading="lazy"' +
       ' onerror="this.parentElement.innerHTML=\'<div class=\\\'mtg-card-header\\\'><span class=\\\'mtg-card-name\\\'>' + card.name.replace(/'/g, "\\'") + '</span></div><div class=\\\'mtg-card-type\\\'>' + (card.type || '').replace(/'/g, "\\'") + '</div>\'">';
     div.style.width = '200px';
   } else {
