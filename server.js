@@ -2104,7 +2104,9 @@ app.post('/api/events/:id/pick', authMiddleware, (req, res) => {
     let picksThisRound = JSON.parse(event.picks_this_round || '[]');
     const myParticipantId = participants[myIndex].id;
     if (picksThisRound.includes(myParticipantId)) {
-      throw new Error('本轮你已经选过牌了，请等待其他玩家传牌');
+      // 幂等处理：本轮已选过牌（常见于客户端重复/延迟提交），直接返回成功，
+      // 让客户端进入等待状态自愈，避免报错后玩家反复操作导致轮抓卡死
+      return { already_picked: true, draft_complete: false };
     }
 
     // Phase 1: Human picks from their current pack
@@ -3327,7 +3329,15 @@ app.post('/api/battles/:id/next-game', authMiddleware, (req, res) => {
 
     battle.player1_deck = JSON.parse(typeof battle.player1_deck === 'string' ? battle.player1_deck : '{}');
     battle.player2_deck = JSON.parse(typeof battle.player2_deck === 'string' ? battle.player2_deck : '{}');
-    const gs = initializeGameState(battle);
+    // BO3 rule: loser of the previous game goes first in the next game
+    let nextStartingPlayer = undefined; // undefined → random (first game of the match)
+    try {
+      const prevGs = battle.game_state ? JSON.parse(battle.game_state) : null;
+      if (prevGs && prevGs.gameWinner) {
+        nextStartingPlayer = prevGs.gameWinner === 'p1' ? 'p2' : 'p1';
+      }
+    } catch (e) { /* corrupted state → fall back to random */ }
+    const gs = initializeGameState(battle, nextStartingPlayer);
     const nextGame = (battle.current_game || 1) + 1;
     db.prepare('UPDATE battles SET game_state = ?, current_turn = 1, current_game = ? WHERE id = ?').run(
       JSON.stringify(gs), nextGame, battle.id
@@ -3500,7 +3510,7 @@ function resolveDeck(deckList) {
   });
 }
 
-function initializeGameState(battle) {
+function initializeGameState(battle, startingPlayer) {
   const p1DeckList = Array.isArray(battle.player1_deck.main_deck) ? battle.player1_deck.main_deck : [];
   const p2DeckList = Array.isArray(battle.player2_deck.main_deck) ? battle.player2_deck.main_deck : [];
   const p1OutsideList = Array.isArray(battle.player1_deck.outside_game) ? battle.player1_deck.outside_game : [];
@@ -3511,7 +3521,9 @@ function initializeGameState(battle) {
   const p2Outside = resolveDeck(p2OutsideList);
   const p1Hand = p1Deck.splice(0, 7);
   const p2Hand = p2Deck.splice(0, 7);
-  const firstPlayer = Math.random() < 0.5 ? 'p1' : 'p2';
+  const firstPlayer = (startingPlayer === 'p1' || startingPlayer === 'p2')
+    ? startingPlayer
+    : (Math.random() < 0.5 ? 'p1' : 'p2');
   const gs = {
     turn: 1,
     activePlayer: firstPlayer,
@@ -3559,19 +3571,33 @@ function initializeGameStateMultiplayer(battle, players) {
     };
     flippedCards[key] = [];
   }
-  var firstIdx = Math.floor(Math.random() * playerKeys.length);
-  var firstPlayer = playerKeys[firstIdx];
+  // Roll a d20 for each player to determine turn order (highest goes first)
+  var rollEntries = playerKeys.map(function(key) {
+    return { key: key, roll: 1 + Math.floor(Math.random() * 20) };
+  });
+  // Shuffle first so ties are broken randomly (stable sort keeps shuffle order for equal rolls)
+  for (var s = rollEntries.length - 1; s > 0; s--) {
+    var t = Math.floor(Math.random() * (s + 1));
+    var tmp = rollEntries[s]; rollEntries[s] = rollEntries[t]; rollEntries[t] = tmp;
+  }
+  rollEntries.sort(function(a, b) { return b.roll - a.roll; });
+  var orderedKeys = rollEntries.map(function(e) { return e.key; });
+  var firstPlayer = orderedKeys[0];
   var firstPlayerName = playersObj[firstPlayer].name;
-  var log = [
-    '多人对战开始！(' + players.length + '人)',
-    firstPlayerName + ' 先手',
-    '--- 第1回合: ' + firstPlayerName + ' ---'
-  ];
+  var log = ['多人对战开始！(' + players.length + '人)', '掷骰决定顺位 (d20):'];
+  for (var r = 0; r < rollEntries.length; r++) {
+    var re = rollEntries[r];
+    log.push(playersObj[re.key].name + ' 掷出 ' + re.roll + ' 点');
+  }
+  log.push('顺位: ' + orderedKeys.map(function(k) { return playersObj[k].name; }).join(' → '));
+  log.push(firstPlayerName + ' 先手');
+  log.push('--- 第1回合: ' + firstPlayerName + ' ---');
   return {
     turn: 1,
     activePlayer: firstPlayer,
     players: playersObj,
-    playerOrder: playerKeys,
+    playerOrder: orderedKeys,
+    playerRolls: rollEntries.reduce(function(acc, e) { acc[e.key] = e.roll; return acc; }, {}),
     log: log,
     flipped_cards: flippedCards,
     winner: null,
@@ -3656,26 +3682,39 @@ function processGameAction(gs, userId, action) {
       // When a card leaves the battlefield, detach any stacked cards back to the battlefield
       if (from_zone === 'battlefield') {
         detachStackedCardsToBattlefield(me, card, gs);
+        // Leaving the battlefield reveals a face-down card
+        if (to_zone !== 'battlefield') delete card.face_down;
       }
       // Tokens cease to exist when they leave the battlefield (MTG rule)
       if (card.is_token && from_zone === 'battlefield') {
         gs.log.push(me.name + ' 的 ' + card.name + ' 离开战场，消失');
         return { success: true };
       }
-      if (to_zone === 'battlefield') { card.tapped = false; card.damage_marked = 0; card.counters = {}; }
-      // Library: put at specified position (1=top, 2=second, etc.) or default to top
+      if (to_zone === 'battlefield') {
+        card.tapped = false; card.damage_marked = 0; card.counters = {};
+        if (action.face_down) card.face_down = true; else delete card.face_down;
+      }
+      // Library: put at specified position (1=top, 2=second, etc.), at bottom, or default to top
       if (to_zone === 'library') {
-        const pos = parseInt(library_position);
-        if (pos && pos > 0) {
-          me[to_zone].splice(pos - 1, 0, card);
+        if (library_position === 'bottom') {
+          me[to_zone].push(card);
         } else {
-          me[to_zone].unshift(card);
+          const pos = parseInt(library_position);
+          if (pos && pos > 0) {
+            me[to_zone].splice(pos - 1, 0, card);
+          } else {
+            me[to_zone].unshift(card);
+          }
         }
       } else {
         me[to_zone].push(card);
       }
-      const posLabel = to_zone === 'library' && library_position ? '(牌库顶第' + library_position + '张)' : '';
-      gs.log.push(me.name + ' 将 ' + card.name + ' 从' + from_zone + '移至' + to_zone + posLabel);
+      let posLabel = '';
+      if (to_zone === 'library') {
+        posLabel = library_position === 'bottom' ? '(牌库底)' : (library_position ? '(牌库顶第' + library_position + '张)' : '');
+      }
+      const faceDownLabel = to_zone === 'battlefield' && action.face_down ? '(背面进场)' : '';
+      gs.log.push(me.name + ' 将 ' + card.name + ' 从' + from_zone + '移至' + to_zone + posLabel + faceDownLabel);
       return { success: true };
     }
     case 'tap_card': {
@@ -3710,6 +3749,19 @@ function processGameAction(gs, userId, action) {
       }
       return { success: true };
     }
+    case 'toggle_face_down': {
+      const idx = findCardInZone(me, action.card_id, 'battlefield');
+      if (idx === -1) return { error: '战场上没有此牌' };
+      const card = me.battlefield[idx];
+      if (card.face_down) {
+        delete card.face_down;
+        gs.log.push(me.name + ' 将 ' + card.name + ' 翻回正面');
+      } else {
+        card.face_down = true;
+        gs.log.push(me.name + ' 将一张战场上的牌转为背面朝上');
+      }
+      return { success: true };
+    }
     case 'draw_card': {
       if (!me.library || me.library.length === 0) return { error: '牌库为空' };
       const drawn = me.library.shift();
@@ -3718,7 +3770,18 @@ function processGameAction(gs, userId, action) {
       return { success: true };
     }
     case 'end_turn': {
-      const nextPlayer = gs.activePlayer === 'p1' ? 'p2' : 'p1';
+      let nextPlayer;
+      if (gs.isMultiplayer && Array.isArray(gs.playerOrder) && gs.playerOrder.length > 1) {
+        const orderLen = gs.playerOrder.length;
+        const curIdx = gs.playerOrder.indexOf(gs.activePlayer);
+        nextPlayer = gs.playerOrder[(curIdx + 1) % orderLen];
+        // Skip eliminated players
+        for (let step = 1; step < orderLen && gs.players[nextPlayer] && gs.players[nextPlayer].isEliminated; step++) {
+          nextPlayer = gs.playerOrder[(curIdx + 1 + step) % orderLen];
+        }
+      } else {
+        nextPlayer = gs.activePlayer === 'p1' ? 'p2' : 'p1';
+      }
       const next = gs.players[nextPlayer];
       gs.activePlayer = nextPlayer;
       gs.turn++;
@@ -3766,9 +3829,11 @@ function processGameAction(gs, userId, action) {
       if (!card_name || !deck_zone || deck_idx === undefined || !to_zone) return { error: '缺少参数' };
       let resolvedCard;
       if (deck_zone === 'library') {
-        // Find card in library by name
+        // Find card in library by id first (exact instance), then by name
         const lib = me.library || [];
-        const libIdx = lib.findIndex(c => c.name === card_name);
+        let libIdx = -1;
+        if (action.card_id) libIdx = lib.findIndex(c => c.id === action.card_id);
+        if (libIdx === -1) libIdx = lib.findIndex(c => c.name === card_name);
         if (libIdx === -1) return { error: '牌库中未找到此牌: ' + card_name };
         resolvedCard = lib.splice(libIdx, 1)[0];
       } else {
@@ -3781,10 +3846,13 @@ function processGameAction(gs, userId, action) {
         resolvedCard = resolveDeck([deckCard])[0];
       }
       if (!resolvedCard) return { error: '无法解析卡牌' };
-      if (to_zone === 'battlefield') { resolvedCard.tapped = false; resolvedCard.damage_marked = 0; resolvedCard.counters = {}; }
+      if (to_zone === 'battlefield') {
+        resolvedCard.tapped = false; resolvedCard.damage_marked = 0; resolvedCard.counters = {};
+        if (action.face_down) resolvedCard.face_down = true; else delete resolvedCard.face_down;
+      }
       me[to_zone] = me[to_zone] || [];
       me[to_zone].push(resolvedCard);
-      gs.log.push(me.name + ' 从牌库打出 ' + resolvedCard.name + ' 至' + to_zone);
+      gs.log.push(me.name + ' 从牌库打出 ' + resolvedCard.name + ' 至' + to_zone + (to_zone === 'battlefield' && action.face_down ? '(背面进场)' : ''));
       // Also remove from revealed_cards if this card was being shown
       if (gs.revealed_cards && gs.revealed_cards[myKey]) {
         gs.revealed_cards[myKey] = gs.revealed_cards[myKey].filter(c => c.id !== resolvedCard.id);
@@ -3909,6 +3977,24 @@ function processGameAction(gs, userId, action) {
       // Clear revealed_cards since the preview is closed
       if (gs.revealed_cards && gs.revealed_cards[myKey]) {
         delete gs.revealed_cards[myKey];
+      }
+      return { success: true };
+    }
+    case 'position_library_card': {
+      const { card_id, position } = action; // position: 'bottom' or a number (1 = top)
+      if (!card_id || position === undefined || position === null) return { error: '缺少参数' };
+      const lib = me.library || [];
+      const idx = lib.findIndex(c => c.id === card_id);
+      if (idx === -1) return { error: '牌库中没有此牌' };
+      const card = lib.splice(idx, 1)[0];
+      if (position === 'bottom') {
+        lib.push(card);
+        gs.log.push(me.name + ' 将 ' + card.name + ' 置入牌库底');
+      } else {
+        const pos = parseInt(position);
+        if (!pos || pos < 1) return { error: '无效的位置' };
+        lib.splice(Math.min(pos - 1, lib.length), 0, card);
+        gs.log.push(me.name + ' 将 ' + card.name + ' 置入牌库顶第' + pos + '张');
       }
       return { success: true };
     }

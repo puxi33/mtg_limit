@@ -288,14 +288,26 @@ async function renderEventDetail(el, id) {
       currentPack = packData.current || (Array.isArray(packData) ? packData[0] : []) || [];
     }
 
-    const isMyTurnToPick = currentPack.length > 0 && event.status === 'in_progress' && isParticipant;
+    // 本轮我是否已经选过牌（刷新页面后不应再显示剩余牌，而是显示等待状态）
+    const iAlreadyPickedThisRound = !!(myParticipation && event.round_status &&
+      (event.round_status.picked || []).some(p => p.id === myParticipation.id));
+
+    const isMyTurnToPick = currentPack.length > 0 && event.status === 'in_progress' && isParticipant && !iAlreadyPickedThisRound;
+
+    // 已选过但包还没传走：预设等待状态，轮询会保持等待直到新包到达
+    if (iAlreadyPickedThisRound && currentPack.length > 0) {
+      window._draftWaiting = true;
+      window._lastPackIds = currentPack.map(c => String(c.id));
+    }
 
     // 我的抓牌是否已完成（仅限轮抓类：已有牌池，且当前包/队列/待处理队列均为空）
     const isDraftType = event.type === 'draft' || event.type === 'half_draft';
-    const myDraftDone = isDraftType && isParticipant && hasPool && (() => {
+    // 现开：开始后即相当于轮抓已完成，样式复用轮抓完成态
+    const isSealedReady = event.type === 'sealed' && event.status !== 'waiting' && hasPool;
+    const myDraftDone = isSealedReady || (isDraftType && isParticipant && hasPool && (() => {
       const pd = (myParticipation && myParticipation.current_packs) || {};
       return (pd.current || []).length === 0 && (pd.queue || []).length === 0 && (pd.pending_queue || []).length === 0;
-    })();
+    })());
 
     // Calculate standings from battles
     const standings = {};
@@ -415,7 +427,7 @@ async function renderEventDetail(el, id) {
       <!-- Draft Picking Panel -->
       ${myDraftDone ? `
         <div class="draft-redesign draft-done" id="draft-redesign">
-          <div class="draft-complete-banner" id="draft-complete-banner">✅ 你的抓牌已完成${myDeck ? '' : '，等待所有玩家完成抓牌后自动创建牌组'}</div>
+          <div class="draft-complete-banner" id="draft-complete-banner">✅ ${event.type === 'sealed' ? '现开卡池已发放' : '你的抓牌已完成'}${myDeck ? '' : (event.type === 'sealed' ? '，正在自动创建牌组...' : '，等待所有玩家完成抓牌后自动创建牌组')}</div>
         </div>
       ` : isParticipant && (isMyTurnToPick || (event.status === 'in_progress' && myParticipation && myParticipation.pool && myParticipation.pool.length > 0)) ? `
         <div class="draft-redesign" id="draft-redesign">
@@ -707,9 +719,9 @@ async function renderEventDetail(el, id) {
 
     // Auto create deck when draft is completed and no deck exists yet
 
-    if (event.status === 'completed' && isParticipant && myParticipation.pool && myParticipation.pool.length > 0 && !myDeck && !window._autoDeckInProgress) {
+    if ((event.status === 'completed' || event.type === 'sealed') && isParticipant && myParticipation.pool && myParticipation.pool.length > 0 && !myDeck && !window._autoDeckInProgress) {
       window._autoDeckInProgress = true;
-      autoCreateDeckFromDraft(id, myParticipation.pool).then(function() {
+      autoCreateDeckFromDraft(id, myParticipation.pool, event.type).then(function() {
         window._autoDeckInProgress = false;
       });
     }
@@ -812,6 +824,7 @@ let draftPollInterval = null;
 let draftSelectedCards = [];
 var _draftStagedPicks = []; // Cards dragged from pick strip (multi-pick staging)
 var _manualPlacements = {}; // { cardId: columnKey } — tracks user drag placements
+var _draftPickSubmitting = false; // 提交锁：防止拖拽/点击并发提交导致状态错乱
 
 function renderDraftCards(cards, cardsPerPick) {
   window._draftWaiting = false;
@@ -1019,6 +1032,8 @@ function updateDraftConfirmUI(cardsPerPick) {
 }
 
 async function confirmDraftPickSingle(eventId, cardIds, cardData, targetColumn) {
+  if (_draftPickSubmitting) return;
+  _draftPickSubmitting = true;
   try {
     // Save remaining card IDs (current pack minus picked cards) BEFORE showing waiting
     var remainingIds = (window._lastPackIds || []).filter(function(id) {
@@ -1032,22 +1047,41 @@ async function confirmDraftPickSingle(eventId, cardIds, cardData, targetColumn) 
       showToast('轮抓完成！请构建你的牌组');
       navigate('event-detail', { id: eventId });
     } else {
-      // If dragged to a specific column, record manual placement after API success
-      // (before poll returns, so initDraftColumns respects user's column choice)
-      if (cardData && targetColumn) {
-        _manualPlacements[String(cardData.id)] = targetColumn;
-        if (_draftColumns) {
-          if (!_draftColumns[targetColumn]) _draftColumns[targetColumn] = [];
-          _draftColumns[targetColumn].push(cardData);
-          renderDraftColumns();
-        }
-      }
-      // 不立即重渲染 —— 显示等待状态,等轮询把新包带回来
+      // 先切换到等待状态，再更新牌池列（列更新异常不能阻塞等待态，避免界面停留在可选牌状态）
       window._draftWaiting = true;
       window._lastPackIds = remainingIds; // so poll knows the "old" remaining pack
       showDraftWaiting(eventId);
+      try {
+        // If dragged to a specific column, record manual placement after API success
+        // (before poll returns, so initDraftColumns respects user's column choice)
+        if (cardData && targetColumn) {
+          _manualPlacements[String(cardData.id)] = targetColumn;
+          if (_draftColumns) {
+            if (!_draftColumns[targetColumn]) _draftColumns[targetColumn] = [];
+            _draftColumns[targetColumn].push(cardData);
+            _saveDraftColumns();
+            renderDraftColumns();
+          }
+        }
+      } catch (colErr) { console.error('draft column update failed:', colErr); }
     }
-  } catch (err) { showToast(err.message, 'error'); }
+  } catch (err) {
+    _handleDraftPickError(err, eventId);
+  } finally {
+    _draftPickSubmitting = false;
+  }
+}
+
+// 选牌提交失败的统一处理：若服务端提示本轮已选过（说明之前的提交其实成功了），
+// 直接进入等待状态自愈，避免玩家误以为没选上而反复操作导致卡死
+function _handleDraftPickError(err, eventId) {
+  var msg = (err && err.message) ? err.message : '选牌失败';
+  if (msg.indexOf('已经选过') >= 0) {
+    window._draftWaiting = true;
+    showDraftWaiting(eventId);
+    return;
+  }
+  showToast(msg, 'error');
 }
 
 async function confirmDraftPick(eventId) {
@@ -1068,6 +1102,8 @@ async function confirmDraftPick(eventId) {
   }
   const cardIds = draftSelectedCards.map(c => c.id);
   const confirmBtn = document.getElementById('draft-confirm-btn');
+  if (_draftPickSubmitting) return;
+  _draftPickSubmitting = true;
   if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = '确认中...'; }
 
   try {
@@ -1089,8 +1125,10 @@ async function confirmDraftPick(eventId) {
       showDraftWaiting(eventId);
     }
   } catch (err) {
-    showToast(err.message, 'error');
+    _handleDraftPickError(err, eventId);
     if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = '确认选择'; }
+  } finally {
+    _draftPickSubmitting = false;
   }
 }
 
@@ -1183,6 +1221,27 @@ async function pollDraftState(eventId) {
     }
 
     const newIds = currentPack.map(c => String(c.id));
+
+    // 本轮我已经选过牌（例如选完后刷新）：保持等待状态，不渲染剩余牌
+    const iAlreadyPicked = !!(event.round_status && (event.round_status.picked || [])
+      .some(p => myParticipation && p.id === myParticipation.id));
+    if (iAlreadyPicked) {
+      if (!window._draftWaiting) {
+        window._draftWaiting = true;
+        window._lastPackIds = newIds;
+        showDraftWaiting(eventId);
+      } else if ((window._lastPackIds || []).join(',') !== newIds.join(',')) {
+        // 包内容变了（但仍是我选剩的），同步 id 以便后续识别新包
+        window._lastPackIds = newIds;
+      }
+      var poolSizePicked = (myParticipation.pool || []).length;
+      if (window._lastPoolSize == null || window._lastPoolSize !== poolSizePicked) {
+        window._lastPoolSize = poolSizePicked;
+        initDraftColumns(myParticipation.pool || []);
+        renderDraftColumns();
+      }
+      return;
+    }
 
     // If we were waiting, check if it's a genuinely new pack (not just remaining cards)
     if (window._draftWaiting) {
@@ -1708,6 +1767,8 @@ function renderDraftColumns() {
               // Multi-pick: stage the card
               stageDraftPick(cardData, key);
             }
+          } else if (data.source === 'pick') {
+            showToast('拖拽的卡牌数据已失效，请刷新后重试', 'error');
           }
         } else if (data.fromColumn) {
           // Column-to-column move
@@ -1723,7 +1784,7 @@ function renderDraftColumns() {
             renderDraftColumns();
           }
         }
-      } catch (err) { /* ignore bad drops */ }
+      } catch (err) { console.error('draft column drop failed:', err); }
     });
 
     colEl.appendChild(body);
@@ -1975,13 +2036,15 @@ function stageDraftPick(card, targetColumn) {
 
   _draftStagedPicks.push({ card: card, column: targetColumn });
 
-  // Add card to target column visually
-  if (_draftColumns) {
-    if (!_draftColumns[targetColumn]) _draftColumns[targetColumn] = [];
-    _draftColumns[targetColumn].push(card);
-    _saveDraftColumns();
-    renderDraftColumns();
+  // Add card to target column visually（列尚未初始化时先建空列，避免拖拽的牌"消失"）
+  if (!_draftColumns) {
+    _draftColumns = {};
+    _draftColumnKeys.forEach(function(k) { _draftColumns[k] = []; });
   }
+  if (!_draftColumns[targetColumn]) _draftColumns[targetColumn] = [];
+  _draftColumns[targetColumn].push(card);
+  _saveDraftColumns();
+  renderDraftColumns();
 
   // Re-render pick strip to show staged state
   var currentPack = window._currentDraftPack || [];
@@ -2026,6 +2089,8 @@ async function confirmStagedDraftPick(eventId) {
     showToast('已选卡牌过多', 'error');
     return;
   }
+  if (_draftPickSubmitting) return;
+  _draftPickSubmitting = true;
   var cardIds = _draftStagedPicks.map(function(s) { return s.card.id; });
   var confirmBtn = document.getElementById('draft-confirm-btn');
   if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = '确认中...'; }
@@ -2040,16 +2105,20 @@ async function confirmStagedDraftPick(eventId) {
     });
 
     // Remove staged cards from columns (they'll be re-added via pool update)
-    _draftStagedPicks.forEach(function(s) {
-      // Record manual placement so initDraftColumns respects user's column choice
-      _manualPlacements[String(s.card.id)] = s.column;
-      var col = _draftColumns[s.column];
-      if (col) {
-        for (var i = col.length - 1; i >= 0; i--) {
-          if (String(col[i].id) === String(s.card.id)) { col.splice(i, 1); break; }
+    // 与列相关的清理单独保护，任何异常都不能影响等待态切换（_draftColumns 可能尚未初始化）
+    try {
+      _draftStagedPicks.forEach(function(s) {
+        // Record manual placement so initDraftColumns respects user's column choice
+        _manualPlacements[String(s.card.id)] = s.column;
+        var col = _draftColumns && _draftColumns[s.column];
+        if (col) {
+          for (var i = col.length - 1; i >= 0; i--) {
+            if (String(col[i].id) === String(s.card.id)) { col.splice(i, 1); break; }
+          }
         }
-      }
-    });
+      });
+      if (_draftColumns) { _saveDraftColumns(); renderDraftColumns(); }
+    } catch (colErr) { console.error('draft staged cleanup failed:', colErr); }
     _draftStagedPicks = [];
 
     if (result.draft_complete) {
@@ -2061,12 +2130,18 @@ async function confirmStagedDraftPick(eventId) {
       showDraftWaiting(eventId);
     }
   } catch (err) {
-    showToast(err.message, 'error');
+    _handleDraftPickError(err, eventId);
+    _draftStagedPicks = [];
     if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = '确认选择'; }
+  } finally {
+    _draftPickSubmitting = false;
   }
 }
 
-async function autoCreateDeckFromDraft(eventId, pool) {
+async function autoCreateDeckFromDraft(eventId, pool, eventType) {
+  var isSealed = eventType === 'sealed';
+  // 确保列数据属于当前事件（自动切换事件时重置），现开场景下由卡池初始化
+  try { initDraftColumns(pool || []); } catch (e) { /* ignore */ }
   // Gather cards from columns: CMC columns + Land → main deck; Sideboard → sideboard; Outside → outside_game
   var mainDeck = [];
   var sideboard = [];
@@ -2089,7 +2164,7 @@ async function autoCreateDeckFromDraft(eventId, pool) {
   if (mainDeck.length === 0 && sideboard.length === 0) return;
 
   try {
-    var deckName = '轮抓牌组 #' + eventId;
+    var deckName = (isSealed ? '现开牌组 #' : '轮抓牌组 #') + eventId;
     var body = {
       name: deckName,
       main_deck: mainDeck,
@@ -2100,15 +2175,16 @@ async function autoCreateDeckFromDraft(eventId, pool) {
     var deck = await api('/api/decks', { method: 'POST', body: JSON.stringify(body) });
     showToast('牌组已自动创建: ' + deckName);
     // Update the banner
+    var doneLabel = isSealed ? '现开已结束' : '轮抓已结束';
     var banner = document.getElementById('draft-complete-banner');
     if (banner) {
-      banner.innerHTML = '轮抓已结束 — <a href="#/decks/' + deck.id + '/build" style="color:var(--success);text-decoration:underline">编辑牌组</a>';
+      banner.innerHTML = doneLabel + ' — <a href="#/decks/' + deck.id + '/build" style="color:var(--success);text-decoration:underline">编辑牌组</a>';
     }
     // Refresh the page to show deck section
     setTimeout(function() { navigate('event-detail', { id: eventId }); }, 1500);
   } catch (err) {
     showToast('自动创建牌组失败: ' + err.message, 'error');
     var banner = document.getElementById('draft-complete-banner');
-    if (banner) banner.textContent = '轮抓已结束 — 自动创建牌组失败，请手动构建';
+    if (banner) banner.textContent = (isSealed ? '现开已结束' : '轮抓已结束') + ' — 自动创建牌组失败，请手动构建';
   }
 }

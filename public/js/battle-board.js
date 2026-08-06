@@ -40,6 +40,11 @@ function renderCardInnerHtml(card, isFlipped) {
     '</div>';
 }
 
+// Generic card back for face-down cards
+function renderFaceDownInnerHtml() {
+  return '<img src="/images/back.png" alt="card back" style="width:100%;display:block;border-radius:4px" draggable="false">';
+}
+
 function renderCounterBadges(card) {
   if (!card.counters || typeof card.counters !== 'object') return '';
   var keys = Object.keys(card.counters);
@@ -210,17 +215,28 @@ function goToDeckEditBetweenGames(battleId) {
 // ============================================================
 // Card Hover Preview (supports DFC double-faced cards)
 // ============================================================
-function showCardPreview(card) {
+function showCardPreview(card, opts) {
   hideCardPreview();
   if (!card) return;
-
-  var frontImg = card.image_large || card.image || card.image_small;
-  var backImg = card.image_large_back || card.image_back || card.image_small_back;
-  var isDFC = !!backImg;
 
   var div = document.createElement('div');
   div.id = 'card-preview-popup';
   div.style.cssText = 'position:fixed;z-index:9999;pointer-events:none;transition:opacity 0.15s;opacity:0;display:flex;gap:6px;padding:8px;background:rgba(10,14,26,0.95);border:1px solid #d4a043;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.7),0 0 0 1px rgba(212,160,67,0.3);backdrop-filter:blur(8px);';
+
+  // Face-down cards: only the owner may see the details on hover
+  if (card.face_down && !(opts && opts.ownerView)) {
+    div.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;gap:6px">' +
+      '<img src="/images/back.png" style="width:240px;height:auto;border-radius:8px;display:block;box-shadow:0 4px 12px rgba(0,0,0,0.5)">' +
+      '<div style="font-size:0.7rem;color:rgba(200,210,230,0.7)">背面朝上的牌</div>' +
+      '</div>';
+    document.body.appendChild(div);
+    requestAnimationFrame(function() { div.style.opacity = '1'; });
+    return;
+  }
+
+  var frontImg = card.image_large || card.image || card.image_small;
+  var backImg = card.image_large_back || card.image_back || card.image_small_back;
+  var isDFC = !!backImg;
 
   if (isDFC) {
     // Double-faced card: show front and back side by side
@@ -425,6 +441,36 @@ function showContextMenu(e, cardId, card, playerKey, battleId) {
     menu.appendChild(div);
   })();
 
+  // Put on library bottom
+  (function() {
+    var div = document.createElement('div');
+    div.className = 'ctx-menu-item';
+    var span = document.createElement('span');
+    span.textContent = '\u{1F4DA} 置入牌库底';
+    div.appendChild(span);
+    div.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      hideContextMenu();
+      mtgaAction(battleId, { type: 'move_card', card_id: cardId, from_zone: 'battlefield', to_zone: 'library', library_position: 'bottom' });
+    });
+    menu.appendChild(div);
+  })();
+
+  // Face-down toggle
+  (function() {
+    var div = document.createElement('div');
+    div.className = 'ctx-menu-item';
+    var span = document.createElement('span');
+    span.textContent = card.face_down ? '\u{1F441} 翻回正面' : '\u{1F0A0} 转为背面朝上';
+    div.appendChild(span);
+    div.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      hideContextMenu();
+      mtgaAction(battleId, { type: 'toggle_face_down', card_id: cardId });
+    });
+    menu.appendChild(div);
+  })();
+
   // Create a token copy of this permanent
   (function() {
     var div = document.createElement('div');
@@ -448,6 +494,73 @@ function showContextMenu(e, cardId, card, playerKey, battleId) {
   menu.style.left = x + 'px';
   menu.style.top = y + 'px';
 
+  requestAnimationFrame(function() {
+    var menuRect = menu.getBoundingClientRect();
+    if (menuRect.right > window.innerWidth) menu.style.left = (x - menuRect.width) + 'px';
+    if (menuRect.bottom > window.innerHeight) menu.style.top = (y - menuRect.height) + 'px';
+  });
+}
+
+// ============================================================
+// Context Menu for Hand Cards
+// ============================================================
+function showHandCardMenu(e, cardId, card, playerKey, battleId) {
+  e.preventDefault();
+  e.stopPropagation();
+  hideContextMenu();
+
+  var menu = document.createElement('div');
+  menu.id = 'ctx-menu';
+  menu.className = 'ctx-menu';
+
+  function addItem(label, handler) {
+    var div = document.createElement('div');
+    div.className = 'ctx-menu-item';
+    var span = document.createElement('span');
+    span.textContent = label;
+    div.appendChild(span);
+    div.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      hideContextMenu();
+      handler();
+    });
+    menu.appendChild(div);
+  }
+  function addSeparator() {
+    var sep = document.createElement('div');
+    sep.className = 'ctx-menu-separator';
+    menu.appendChild(sep);
+  }
+
+  // Play to battlefield
+  addItem('\u2694\uFE0F 打出至战场', function() {
+    mtgaAction(battleId, { type: 'move_card', card_id: cardId, from_zone: 'hand', to_zone: 'battlefield' });
+  });
+  // Play face down
+  addItem('\u{1F0A0} 背面进场', function() {
+    mtgaAction(battleId, { type: 'move_card', card_id: cardId, from_zone: 'hand', to_zone: 'battlefield', face_down: true });
+  });
+
+  addSeparator();
+
+  // Put on library top at position X
+  addItem('\u{1F4DA} 放到牌库顶...', function() {
+    var input = prompt('放到牌库顶第几张？（1 = 最顶部）', '1');
+    if (input === null) return;
+    var pos = parseInt(input);
+    if (!pos || pos < 1) { showToast('请输入有效的位置数字', 'error'); return; }
+    mtgaAction(battleId, { type: 'move_card', card_id: cardId, from_zone: 'hand', to_zone: 'library', library_position: pos });
+  });
+  // Put on library bottom
+  addItem('\u{1F4DA} 置入牌库底', function() {
+    mtgaAction(battleId, { type: 'move_card', card_id: cardId, from_zone: 'hand', to_zone: 'library', library_position: 'bottom' });
+  });
+
+  document.body.appendChild(menu);
+  var x = e.clientX;
+  var y = e.clientY;
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
   requestAnimationFrame(function() {
     var menuRect = menu.getBoundingClientRect();
     if (menuRect.right > window.innerWidth) menu.style.left = (x - menuRect.width) + 'px';
@@ -596,6 +709,28 @@ function showDeckPreviewMenu(e, gs, myKey, battleId) {
     showDeckPreviewModal(gs, myKey, battleId, num, true);
   });
   menu.appendChild(showDiv);
+
+  // Play top card face down
+  var topCard = (gs.players[myKey] && gs.players[myKey].library && gs.players[myKey].library[0]) || null;
+  if (topCard) {
+    var faceDownDiv = document.createElement('div');
+    faceDownDiv.className = 'ctx-menu-item';
+    faceDownDiv.innerHTML = '<span>\u{1F0A0} 打出顶牌(背面进场)</span>';
+    faceDownDiv.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      hideContextMenu();
+      mtgaAction(battleId, {
+        type: 'play_from_deck',
+        card_name: topCard.name,
+        card_id: topCard.id,
+        deck_zone: 'library',
+        deck_idx: -1,
+        to_zone: 'battlefield',
+        face_down: true
+      });
+    });
+    menu.appendChild(faceDownDiv);
+  }
 
   // Shuffle
   var shuffleDiv = document.createElement('div');
@@ -753,6 +888,49 @@ function showPreviewCardMenu(e, card, cardId) {
     menu.appendChild(div);
   });
 
+  // Play to battlefield face down
+  (function() {
+    var div = document.createElement('div');
+    div.className = 'ctx-menu-item';
+    div.innerHTML = '<span>\u{1F0A0} 背面进场</span>';
+    div.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      hideContextMenu();
+      playCardFromPreview(card, cardId, 'battlefield', true);
+    });
+    menu.appendChild(div);
+  })();
+
+  // Position within library: top X
+  (function() {
+    var div = document.createElement('div');
+    div.className = 'ctx-menu-item';
+    div.innerHTML = '<span>\u{1F4DA} 置入牌库顶...</span>';
+    div.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      hideContextMenu();
+      var input = prompt('放到牌库顶第几张？（1 = 最顶部）', '1');
+      if (input === null) return;
+      var pos = parseInt(input);
+      if (!pos || pos < 1) { showToast('请输入有效的位置数字', 'error'); return; }
+      positionPreviewCardInLibrary(card, cardId, pos);
+    });
+    menu.appendChild(div);
+  })();
+
+  // Position within library: bottom
+  (function() {
+    var div = document.createElement('div');
+    div.className = 'ctx-menu-item';
+    div.innerHTML = '<span>\u{1F4DA} 置入牌库底</span>';
+    div.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      hideContextMenu();
+      positionPreviewCardInLibrary(card, cardId, 'bottom');
+    });
+    menu.appendChild(div);
+  })();
+
   document.body.appendChild(menu);
   menu.style.left = e.clientX + 'px';
   menu.style.top = e.clientY + 'px';
@@ -763,7 +941,28 @@ function showPreviewCardMenu(e, card, cardId) {
   });
 }
 
-function playCardFromPreview(card, cardId, toZone) {
+function positionPreviewCardInLibrary(card, cardId, position) {
+  if (!_deckPreviewBattleId) return;
+  mtgaAction(_deckPreviewBattleId, {
+    type: 'position_library_card',
+    card_id: cardId,
+    position: position
+  }).then(function() {
+    // Card moved out of the preview window — remove it from the preview
+    _deckPreviewOrder = _deckPreviewOrder.filter(function(id) { return id !== cardId; });
+    delete _deckPreviewCards['card_' + cardId];
+    if (_deckPreviewOrder.length === 0) {
+      closeDeckPreview();
+    } else {
+      renderPreviewCards();
+    }
+  }).catch(function(err) {
+    console.error('position_library_card failed:', err);
+    showToast('调整牌库位置失败: ' + (err.message || '未知错误'), 'error');
+  });
+}
+
+function playCardFromPreview(card, cardId, toZone, faceDown) {
   if (!_deckPreviewBattleId) return;
   // Send play_from_deck action
   mtgaAction(_deckPreviewBattleId, {
@@ -771,7 +970,8 @@ function playCardFromPreview(card, cardId, toZone) {
     card_name: card.name,
     deck_zone: 'library',
     deck_idx: -1,
-    to_zone: toZone
+    to_zone: toZone,
+    face_down: !!faceDown
   }).then(function() {
     // Remove from preview order
     _deckPreviewOrder = _deckPreviewOrder.filter(function(id) { return id !== cardId; });
@@ -824,7 +1024,7 @@ var _deckPreviewReorderDrag = null; // { cardId, fromIdx, cardEl }
 function setupPreviewCardDragHandlers() {
   var cards = document.querySelectorAll('#deck-preview-cards .deck-preview-card');
   cards.forEach(function(cardEl) {
-    var cardId = parseInt(cardEl.getAttribute('data-card-id'));
+    var cardId = cardEl.getAttribute('data-card-id'); // card IDs are strings, do not parseInt
 
     cardEl.addEventListener('dragstart', function(e) {
       var card = _deckPreviewCards['card_' + cardId];
@@ -1093,17 +1293,19 @@ function renderBattlefieldOrganized(cards, playerKey, isMy, flipped) {
         var scFlipped = flippedSet && flippedSet.has(sc.id);
         var offset = (idx + 1) * stackOffset;
         var scBadges = renderCounterBadges(sc) + renderLoyaltyBadge(sc, scFlipped);
+        var scInner = sc.face_down ? renderFaceDownInnerHtml() : renderCardInnerHtml(sc, scFlipped);
         stackHtml += '<div class="mtg-card-stacked" data-card-id="' + sc.id + '" data-zone="battlefield" data-player="' + playerKey + '" data-stack-card="true" style="position:absolute;top:' + offset + 'px;left:-' + offset + 'px;width:' + width + 'px;opacity:0.7;z-index:' + idx + ';cursor:grab" draggable="' + isMy + '">' +
-          renderCardInnerHtml(sc, scFlipped) + scBadges + '</div>';
+          scInner + scBadges + '</div>';
       });
     }
 
     var stackBadge = stackCount > 0 ? '<div class="stack-badge">' + stackCount + '</div>' : '';
+    var mainInner = card.face_down ? renderFaceDownInnerHtml() : (renderCardInnerHtml(card, isCardFlipped) + dmg + extraBadges);
 
     return '<div class="mtg-card-container" style="position:relative;display:inline-block;width:' + (width + stackCount * stackOffset + 20) + 'px;height:' + (Math.round(width * 1.4) + stackCount * stackOffset + 10) + 'px;padding-left:' + (stackCount * stackOffset) + 'px">' +
       stackHtml +
-      '<div class="mtg-card' + tapped + tokenCls + '" data-card-id="' + card.id + '" data-zone="battlefield" data-player="' + playerKey + '" data-color="' + getCardColorClass(card) + '" data-has-stack="' + (stackCount > 0 ? 'true' : 'false') + '" style="width:' + width + 'px;border:none;border-radius:4px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.4);position:relative;z-index:' + (stackCount + 1) + '" draggable="' + isMy + '">' +
-        renderCardInnerHtml(card, isCardFlipped) + dmg + extraBadges + stackBadge +
+      '<div class="mtg-card' + tapped + tokenCls + (card.face_down ? ' face-down' : '') + '" data-card-id="' + card.id + '" data-zone="battlefield" data-player="' + playerKey + '" data-color="' + getCardColorClass(card) + '" data-has-stack="' + (stackCount > 0 ? 'true' : 'false') + '" style="width:' + width + 'px;border:none;border-radius:4px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.4);position:relative;z-index:' + (stackCount + 1) + '" draggable="' + isMy + '">' +
+        mainInner + stackBadge +
       '</div>' +
     '</div>';
   }
@@ -1672,14 +1874,24 @@ function setupBoardHandlers(el, battleId, myKey, oppKey, gs, me, opp, battle) {
     });
   }
 
-  // Card hover preview for all cards on board
-  el.querySelectorAll('.mtg-card').forEach(function(cardEl) {
+  // Card hover preview for all cards on board (including stacked cards)
+  var allCardsLookup = {};
+  allCards.forEach(function(c) { allCardsLookup[c.id] = c; });
+  // Also index cards nested in stacks (they don't appear at the top level of battlefield)
+  (me?.battlefield || []).concat(opp?.battlefield || []).forEach(function(host) {
+    if (Array.isArray(host.stacked_cards)) {
+      host.stacked_cards.forEach(function(sc) { allCardsLookup[sc.id] = sc; });
+    }
+  });
+  el.querySelectorAll('.mtg-card, .mtg-card-stacked').forEach(function(cardEl) {
     var cardId = cardEl.getAttribute('data-card-id');
-    var card = allCards.find(function(c) { return c.id == cardId; });
+    var card = allCardsLookup[cardId];
     if (card) {
+      var cardOwner = cardEl.getAttribute('data-player') || myKey;
+      var ownerView = cardOwner === myKey;
       cardEl.addEventListener('mouseenter', function(e) {
         if (window._isDragging) return;
-        showCardPreview(card);
+        showCardPreview(card, { ownerView: ownerView });
         moveCardPreview(e);
       });
       cardEl.addEventListener('mousemove', function(e) {
@@ -1926,6 +2138,16 @@ function setupBoardHandlers(el, battleId, myKey, oppKey, gs, me, opp, battle) {
     if (!card) return;
     cardEl.addEventListener('contextmenu', function(e) {
       showContextMenu(e, cardId, card, playerKey, battleId);
+    });
+  });
+
+  // Right-click context menu for own hand cards
+  el.querySelectorAll('.mtg-card[data-zone="hand"][data-card-id]').forEach(function(cardEl) {
+    var cardId = cardEl.getAttribute('data-card-id');
+    var handCard = (me?.hand || []).find(function(c) { return c.id == cardId; });
+    if (!handCard) return;
+    cardEl.addEventListener('contextmenu', function(e) {
+      showHandCardMenu(e, cardId, handCard, myKey, battleId);
     });
   });
 
