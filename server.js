@@ -4460,6 +4460,16 @@ app.get('/api/guessSong/random', async (req, res) => {
     const urlRes = await song_url({ id: song.id });
     const audioUrl = urlRes.body.data && urlRes.body.data[0] ? urlRes.body.data[0].url : null;
     if (!audioUrl) return res.status(500).json({ error: '无法获取音频链接，请重试' });
+    // 获取歌曲总时长，随机选取 30s 片段的起点（总时长不足 30s 时从头播放）
+    let startOffset = 0;
+    try {
+      const detailRes = await song_detail({ ids: String(song.id) });
+      const dt = detailRes.body && detailRes.body.songs && detailRes.body.songs[0] ? detailRes.body.songs[0].dt : 0;
+      const fullSec = Math.floor((dt || 0) / 1000);
+      if (fullSec > 30) startOffset = Math.floor(Math.random() * (fullSec - 30));
+    } catch (e) {
+      console.warn('guessSong: failed to fetch duration, fallback to start', e.message);
+    }
     const token = 'tk_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
     songTokens.set(token, song);
     // Clean old tokens (keep last 50)
@@ -4467,7 +4477,7 @@ app.get('/api/guessSong/random', async (req, res) => {
       const keys = Array.from(songTokens.keys());
       for (let i = 0; i < keys.length - 50; i++) songTokens.delete(keys[i]);
     }
-    res.json({ audioUrl, token, duration: 30 });
+    res.json({ audioUrl, token, duration: 30, startOffset });
   } catch (err) {
     console.error('guessSong random error:', err.message);
     res.status(500).json({ error: '获取歌曲失败: ' + err.message });

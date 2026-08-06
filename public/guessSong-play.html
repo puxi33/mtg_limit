@@ -154,7 +154,7 @@ h1 {
     <span class="playlist-tag" id="playlistTag"></span>
   </div>
   <h1>🎵 歌曲猜猜看</h1>
-  <p class="subtitle">听前奏 30 秒，猜猜这首歌的出处？</p>
+  <p class="subtitle">听 30 秒随机片段，猜猜这首歌的出处？</p>
 
   <div class="score-bar">
     已听 <span id="totalCount">0</span> 首 &nbsp;|&nbsp; 猜对 <span id="guessCount">0</span> 首
@@ -246,6 +246,7 @@ var vizInterval = null;
 var playStartTime = 0;
 var totalPlayed = 0;
 var LIMIT = 30;
+var startOffset = 0; // 随机片段在全曲中的起点（秒）
 var totalCount = 0;
 var guessCount = 0;
 
@@ -291,7 +292,7 @@ function stopPlayback() {
 function togglePlay() {
   if (totalPlayed >= LIMIT) {
     totalPlayed = 0;
-    audio.currentTime = 0;
+    audio.currentTime = startOffset;
     document.getElementById('btnReveal').disabled = false;
   }
   if (isPlaying) {
@@ -364,6 +365,7 @@ function loadNextSong() {
         return;
       }
       currentToken = data.token;
+      startOffset = Math.max(0, Number(data.startOffset) || 0);
       audio.src = data.audioUrl;
       audio.load();
       document.getElementById('loadingArea').style.display = 'none';
@@ -388,10 +390,18 @@ document.getElementById('progressBg').addEventListener('click', function(e) {
   if (!audio.src || !audio.duration) return;
   var rect = this.getBoundingClientRect();
   var pct = (e.clientX - rect.left) / rect.width;
-  audio.currentTime = pct * LIMIT;
+  audio.currentTime = startOffset + pct * LIMIT;
   totalPlayed = 0;
   playStartTime = Date.now();
   updateProgress();
+});
+
+// 元数据就绪后，把随机起点定位到真实音频内（防止元数据时长与实际不符）
+audio.addEventListener('loadedmetadata', function() {
+  if (audio.duration && isFinite(audio.duration) && startOffset + LIMIT > audio.duration) {
+    startOffset = Math.max(0, Math.floor(audio.duration) - LIMIT);
+  }
+  try { audio.currentTime = startOffset; } catch (e) {}
 });
 
 document.addEventListener('keydown', function(e) {
