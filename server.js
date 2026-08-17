@@ -3824,6 +3824,20 @@ function processGameAction(gs, userId, action) {
       gs.log.push(target.name + ' 生命' + (amount >= 0 ? '+' : '') + amount + ' (' + target.life + ')');
       return { success: true };
     }
+    case 'record_commander_damage': {
+      const { source_player } = action;
+      const amount = parseInt(action.amount, 10);
+      if (!source_player || !gs.players[source_player]) return { error: '无效的伤害来源' };
+      if (isNaN(amount) || amount === 0) return { error: '无效的伤害值' };
+      const targetKey = (action.target_player && gs.players[action.target_player]) ? action.target_player : myKey;
+      if (targetKey === source_player) return { error: '伤害来源不能是受伤玩家自己' };
+      const target = gs.players[targetKey];
+      target.commander_damage = target.commander_damage || {};
+      target.commander_damage[source_player] = (target.commander_damage[source_player] || 0) + amount;
+      target.life -= amount;
+      gs.log.push(gs.players[source_player].name + ' 的指挥官对 ' + target.name + (amount >= 0 ? ' 造成 ' + amount + ' 点指挥官伤害' : ' 撤销 ' + (-amount) + ' 点指挥官伤害') + ' (累计' + target.commander_damage[source_player] + '，生命' + target.life + ')');
+      return { success: true };
+    }
     case 'play_from_deck': {
       const { card_name, deck_zone, deck_idx, to_zone } = action;
       if (!card_name || !deck_zone || deck_idx === undefined || !to_zone) return { error: '缺少参数' };

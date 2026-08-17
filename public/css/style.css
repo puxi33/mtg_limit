@@ -3472,6 +3472,95 @@ textarea {
   background: rgba(76, 185, 100, 0.15);
   border-color: var(--success);
 }
+.life-btn-cmd {
+  width: auto;
+  padding: 0 8px;
+  margin-left: 8px;
+  color: var(--accent);
+  border-color: rgba(212, 160, 67, 0.35);
+  font-size: 0.65rem;
+  letter-spacing: 0.5px;
+}
+.life-btn-cmd:hover {
+  background: rgba(212, 160, 67, 0.15);
+  border-color: var(--accent);
+}
+.cmd-total {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--accent);
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
+/* Commander damage recording modal */
+.cmd-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cmd-modal-sub {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+.cmd-modal-sub b {
+  color: var(--accent);
+}
+.cmd-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.cmd-src-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.cmd-src-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cmd-src-dmg {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.cmd-input-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.cmd-input {
+  width: 70px;
+  padding: 5px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.9rem;
+  text-align: center;
+}
+.cmd-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.cmd-empty {
+  padding: 12px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
 
 /* Deck Preview Panel - centered modal */
 .deck-preview-panel {

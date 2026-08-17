@@ -1667,6 +1667,15 @@ function switchBattleOpponent(battleId, newOppKey) {
 
 function renderBattleBoard(el, battle, battleId, myKey, oppKey) {
   var gs = battle.game_state;
+  // Multiplayer auto-follow: when the turn moves to another opponent, switch the opponent panel to the current turn player
+  if ((gs.isMultiplayer || state.isMultiplayer) && gs.activePlayer && gs.activePlayer !== myKey && gs.players[gs.activePlayer]) {
+    var _prevActive = battleLocalUI.lastActivePlayer;
+    if (_prevActive && _prevActive !== gs.activePlayer && oppKey !== gs.activePlayer) {
+      oppKey = gs.activePlayer;
+      state.oppKey = oppKey;
+    }
+  }
+  if (gs.activePlayer) battleLocalUI.lastActivePlayer = gs.activePlayer;
   var me = gs.players[myKey];
   var opp = gs.players[oppKey];
   // Fallback: inject avatar from battle-level SQL join if game state lacks it
@@ -1737,6 +1746,16 @@ function renderBattleBoard(el, battle, battleId, myKey, oppKey) {
     sidebarHtml += '</div>';
   }
 
+  // Commander damage totals taken by each player (sum across all sources)
+  function cmdTakenTotal(p) {
+    var cd = (p && p.commander_damage) || {};
+    var t = 0;
+    Object.keys(cd).forEach(function(k) { t += cd[k] || 0; });
+    return t;
+  }
+  var oppCmdTotal = cmdTakenTotal(opp);
+  var myCmdTotal = cmdTakenTotal(me);
+
   var boardHtml =
     '<div class="mtga-board" id="mtga-board">' +
       '<!-- Opponent info -->' +
@@ -1753,6 +1772,8 @@ function renderBattleBoard(el, battle, battleId, myKey, oppKey) {
             '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',1)" title="+1">+1</button>' +
             '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',2)" title="+2">+2</button>' +
             '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'opponent\',5)" title="+5">+5</button>' +
+            '<button class="life-btn life-btn-cmd" onclick="mtgaCommanderDamage(' + battleId + ',\'' + oppKey + '\')" title="记录指挥官伤害">CMD</button>' +
+            (oppCmdTotal > 0 ? '<div class="cmd-total" title="已受到的指挥官伤害合计">\u2694 ' + oppCmdTotal + '</div>' : '') +
           '</div>' +
         '</div>' +
         renderRollResultHtml(gs) +
@@ -1795,6 +1816,8 @@ function renderBattleBoard(el, battle, battleId, myKey, oppKey) {
             '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'self\',1)" title="+1">+1</button>' +
             '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'self\',2)" title="+2">+2</button>' +
             '<button class="life-btn life-btn-plus" onclick="mtgaQuickLife(' + battleId + ',\'self\',5)" title="+5">+5</button>' +
+            '<button class="life-btn life-btn-cmd" onclick="mtgaCommanderDamage(' + battleId + ',\'' + myKey + '\')" title="记录指挥官伤害">CMD</button>' +
+            (myCmdTotal > 0 ? '<div class="cmd-total" title="已受到的指挥官伤害合计">\u2694 ' + myCmdTotal + '</div>' : '') +
           '</div>' +
         '</div>' +
         renderRollResultHtml(gs) +
@@ -2088,10 +2111,10 @@ function setupBoardHandlers(el, battleId, myKey, oppKey, gs, me, opp, battle) {
         // Unstack to battlefield first, then transfer
         mtgaAction(battleId, { type: 'unstack_card', card_id: data.cardId, target_zone: 'battlefield' })
           .then(function() {
-            return mtgaAction(battleId, { type: 'transfer_control', card_id: data.cardId, from_zone: 'battlefield', to_zone: zone });
+            return mtgaAction(battleId, { type: 'transfer_control', card_id: data.cardId, from_zone: 'battlefield', to_zone: zone, target_player: oppKey });
           });
       } else {
-        mtgaAction(battleId, { type: 'transfer_control', card_id: data.cardId, from_zone: data.source, to_zone: zone });
+        mtgaAction(battleId, { type: 'transfer_control', card_id: data.cardId, from_zone: data.source, to_zone: zone, target_player: oppKey });
       }
     });
   });
@@ -2325,10 +2348,10 @@ function setupBoardHandlers(el, battleId, myKey, oppKey, gs, me, opp, battle) {
         if (sel.isStackCard && sel.fromZone === 'battlefield') {
           mtgaAction(battleId, { type: 'unstack_card', card_id: sel.cardId, target_zone: 'battlefield' })
             .then(function() {
-              return mtgaAction(battleId, { type: 'transfer_control', card_id: sel.cardId, from_zone: 'battlefield', to_zone: item.zone });
+              return mtgaAction(battleId, { type: 'transfer_control', card_id: sel.cardId, from_zone: 'battlefield', to_zone: item.zone, target_player: oppKey });
             });
         } else {
-          mtgaAction(battleId, { type: 'transfer_control', card_id: sel.cardId, from_zone: sel.fromZone, to_zone: item.zone });
+          mtgaAction(battleId, { type: 'transfer_control', card_id: sel.cardId, from_zone: sel.fromZone, to_zone: item.zone, target_player: oppKey });
         }
       } else if (sel.fromZone !== item.zone) {
         // Move card to my zone
@@ -2489,6 +2512,51 @@ function mtgaQuickLife(battleId, target, amount) {
     action.target_player = state.oppKey;
   }
   mtgaAction(battleId, action);
+}
+
+// ========== Commander damage recording ==========
+function mtgaCommanderDamage(battleId, targetKey) {
+  var gs = battleLocalUI.gs;
+  if (!gs || !gs.players || !gs.players[targetKey]) return;
+  var target = gs.players[targetKey];
+  var cd = target.commander_damage || {};
+  var allKeys = state.allPlayerKeys || Object.keys(gs.players);
+  var sources = allKeys.filter(function(k) { return k !== targetKey && gs.players[k]; });
+  var total = 0;
+  Object.keys(cd).forEach(function(k) { total += cd[k] || 0; });
+
+  var html = '<div class="cmd-modal">' +
+    '<div class="cmd-modal-sub">' + escapeHtml(target.name || targetKey) + ' \u5df2\u53d7\u6307\u6325\u5b98\u4f24\u5bb3\u5408\u8ba1 <b>' + total + '</b>\uff08\u8bb0\u5f55\u540e\u540c\u65f6\u6263\u9664\u603b\u751f\u547d\uff09</div>';
+  if (sources.length === 0) {
+    html += '<div class="cmd-empty">\u6ca1\u6709\u53ef\u8bb0\u5f55\u7684\u5176\u4ed6\u73a9\u5bb6</div>';
+  }
+  sources.forEach(function(sk) {
+    var sp = gs.players[sk];
+    var dmg = cd[sk] || 0;
+    html += '<div class="cmd-row">' +
+      '<div class="cmd-src-info">' +
+        '<span class="cmd-src-name">' + escapeHtml(sp.name || sk) + '</span>' +
+        '<span class="cmd-src-dmg">\u2694 ' + dmg + '</span>' +
+      '</div>' +
+      '<div class="cmd-input-group">' +
+        '<input type="number" class="cmd-input" id="cmd-input-' + sk + '" min="1" step="1" placeholder="\u4f24\u5bb3\u503c" />' +
+        '<button class="btn btn-primary btn-sm" onclick="mtgaRecordCommanderDamage(' + battleId + ',\'' + targetKey + '\',\'' + sk + '\')">记录</button>' +
+      '</div>' +
+    '</div>';
+  });
+  html += '</div>';
+  showModal('Commander Damage', html);
+}
+
+function mtgaRecordCommanderDamage(battleId, targetKey, sourceKey) {
+  var inputEl = document.getElementById('cmd-input-' + sourceKey);
+  var amount = parseInt(inputEl ? inputEl.value : '', 10);
+  if (isNaN(amount) || amount <= 0) {
+    showToast('请输入有效的伤害值（正整数）', 'error');
+    return;
+  }
+  closeModal();
+  mtgaAction(battleId, { type: 'record_commander_damage', target_player: targetKey, source_player: sourceKey, amount: amount });
 }
 
 function mtgaAdjustLife(battleId, target, currentLife) {
