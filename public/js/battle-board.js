@@ -610,6 +610,36 @@ function showBattlefieldContextMenu(e, playerKey, battleId) {
     menu.appendChild(div);
   }
 
+  addLabel('炼金 & 开包');
+
+  // Alchemy: search any card and place it (non-token)
+  var alchemyDiv = document.createElement('div');
+  alchemyDiv.className = 'ctx-menu-item';
+  var alchemySpan = document.createElement('span');
+  alchemySpan.textContent = '🧪 炼金...';
+  alchemyDiv.appendChild(alchemySpan);
+  alchemyDiv.addEventListener('click', function(ev) {
+    ev.stopPropagation();
+    hideContextMenu();
+    showAlchemyModal(battleId);
+  });
+  menu.appendChild(alchemyDiv);
+
+  // Open a booster pack
+  var packDiv = document.createElement('div');
+  packDiv.className = 'ctx-menu-item';
+  var packSpan = document.createElement('span');
+  packSpan.textContent = '📦 开包...';
+  packDiv.appendChild(packSpan);
+  packDiv.addEventListener('click', function(ev) {
+    ev.stopPropagation();
+    hideContextMenu();
+    showOpenPackModal(battleId);
+  });
+  menu.appendChild(packDiv);
+
+  addSeparator();
+
   addLabel('创建衍生物');
 
   // 搜索衍生物（主入口）：搜索 Scryfall token 并用真实卡图创建
@@ -1245,6 +1275,297 @@ function createTokenFromCard(battleId, card) {
     mana_cost: card.manaCost
   });
   showToast('已创建衍生物: ' + card.name);
+}
+
+// ============================================================
+// Alchemy & Pack Opening
+// (search any card / open a booster; places NON-token cards that
+//  persist across zones like normal cards)
+// ============================================================
+var EXTERNAL_ZONES = [
+  { value: 'battlefield', label: '战场' },
+  { value: 'hand', label: '手牌' },
+  { value: 'graveyard', label: '坟场' },
+  { value: 'library_top', label: '牌库顶' },
+  { value: 'library_bottom', label: '牌库底' },
+  { value: 'exile', label: '放逐区' },
+  { value: 'outside_game', label: '游戏外' }
+];
+function parseExternalZone(val) {
+  if (val === 'library_top') return { to_zone: 'library' };
+  if (val === 'library_bottom') return { to_zone: 'library', library_position: 'bottom' };
+  return { to_zone: val };
+}
+function externalZoneLabel(val) {
+  var z = EXTERNAL_ZONES.filter(function(x) { return x.value === val; })[0];
+  return z ? z.label : val;
+}
+
+// Hover preview for alchemy/pack card thumbnails (floating large image)
+function attachExternalCardHover(item, card) {
+  item.addEventListener('mouseenter', function(e) {
+    showCardPreview(card, {});
+    moveCardPreview(e);
+  });
+  item.addEventListener('mousemove', function(e) { moveCardPreview(e); });
+  item.addEventListener('mouseleave', function() { hideCardPreview(); });
+}
+
+// Right-click zone picker shared by alchemy & pack cards
+function showExternalCardZoneMenu(e, cardName, onPick) {
+  e.preventDefault();
+  e.stopPropagation();
+  hideCardPreview();
+  hideContextMenu();
+  var menu = document.createElement('div');
+  menu.id = 'ctx-menu';
+  menu.className = 'ctx-menu';
+  var label = document.createElement('div');
+  label.className = 'ctx-menu-label';
+  label.textContent = '将「' + cardName + '」放入';
+  menu.appendChild(label);
+  EXTERNAL_ZONES.forEach(function(z) {
+    var div = document.createElement('div');
+    div.className = 'ctx-menu-item';
+    var span = document.createElement('span');
+    span.textContent = z.label;
+    div.appendChild(span);
+    div.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      hideContextMenu();
+      onPick(z.value);
+    });
+    menu.appendChild(div);
+  });
+  document.body.appendChild(menu);
+  var x = e.clientX;
+  var y = e.clientY;
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  requestAnimationFrame(function() {
+    var r = menu.getBoundingClientRect();
+    if (r.right > window.innerWidth) menu.style.left = (x - r.width) + 'px';
+    if (r.bottom > window.innerHeight) menu.style.top = Math.max(8, y - r.height) + 'px';
+  });
+}
+
+// ---------- Alchemy: search any card and place it ----------
+window._alchemyResults = [];
+function showAlchemyModal(battleId) {
+  var html = '<div style="display:flex;flex-direction:column;gap:12px;padding:4px 0">'
+    + '<div style="display:flex;gap:8px">'
+    + '<input id="alchemy-search-input" type="text" placeholder="搜索任意卡牌，如 Lightning Bolt、Sol Ring..." style="flex:1;padding:8px 12px;background:rgba(30,40,60,0.6);border:1px solid rgba(100,120,160,0.3);border-radius:4px;color:#e0e4f0;font-size:0.9rem" onkeydown="if(event.key===\'Enter\')runAlchemySearch(' + battleId + ')">'
+    + '<button class="btn btn-primary" onclick="runAlchemySearch(' + battleId + ')">搜索</button>'
+    + '</div>'
+    + '<div style="font-size:0.75rem;color:rgba(160,180,200,0.6)">左键点击卡图：放入战场 · 右键点击卡图：选择其他区域（手牌/坟场/牌库/放逐区等）· 悬浮查看大图</div>'
+    + '<div id="alchemy-search-results" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;max-height:52vh;overflow-y:auto;padding:4px">'
+    + '<div style="grid-column:1/-1;text-align:center;color:rgba(160,180,200,0.6);padding:24px 0;font-size:0.85rem">输入关键词搜索卡牌（放入的卡牌非衍生物，可正常移动区域）</div>'
+    + '</div>'
+    + '</div>';
+  showModal('炼金 - 搜索卡牌', html);
+  setTimeout(function() { var inp = document.getElementById('alchemy-search-input'); if (inp) inp.focus(); }, 100);
+}
+
+async function runAlchemySearch(battleId) {
+  var input = document.getElementById('alchemy-search-input');
+  var resultsEl = document.getElementById('alchemy-search-results');
+  if (!input || !resultsEl) return;
+  var q = input.value.trim();
+  if (!q) { showToast('请输入搜索词', 'error'); return; }
+  resultsEl.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:rgba(160,180,200,0.6);padding:24px 0;font-size:0.85rem">搜索中...</div>';
+  try {
+    var res = await api('/api/cards/search?q=' + encodeURIComponent(q));
+    var cards = res.cards || [];
+    window._alchemyResults = cards;
+    if (cards.length === 0) {
+      resultsEl.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:rgba(160,180,200,0.6);padding:24px 0;font-size:0.85rem">未找到相关卡牌</div>';
+      return;
+    }
+    resultsEl.innerHTML = '';
+    cards.forEach(function(card, idx) {
+      resultsEl.appendChild(buildAlchemyCardItem(card, idx, battleId));
+    });
+  } catch (err) {
+    resultsEl.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:#e74c3c;padding:24px 0;font-size:0.85rem">搜索失败: ' + escapeHtml(err.message) + '</div>';
+  }
+}
+
+function buildAlchemyCardItem(card, idx, battleId) {
+  var item = document.createElement('div');
+  item.className = 'alchemy-card-item';
+  if (card.image_small || card.image) {
+    var img = document.createElement('img');
+    img.src = card.image_small || card.image;
+    img.alt = card.name;
+    img.loading = 'lazy';
+    item.appendChild(img);
+  } else {
+    var ph = document.createElement('div');
+    ph.className = 'alchemy-card-name';
+    ph.textContent = card.name;
+    item.appendChild(ph);
+  }
+  attachExternalCardHover(item, card);
+  item.addEventListener('click', function() { placeAlchemyCard(battleId, idx, 'battlefield'); });
+  item.addEventListener('contextmenu', function(e) {
+    showExternalCardZoneMenu(e, card.name, function(zoneVal) { placeAlchemyCard(battleId, idx, zoneVal); });
+  });
+  return item;
+}
+
+function placeAlchemyCard(battleId, idx, zoneVal) {
+  var card = window._alchemyResults[idx];
+  if (!card) return;
+  zoneVal = zoneVal || 'battlefield';
+  var zp = parseExternalZone(zoneVal);
+  var payload = { type: 'place_external_card', card: card };
+  for (var k in zp) payload[k] = zp[k];
+  mtgaAction(battleId, payload).then(function(res) {
+    if (res && res.error) { showToast(res.error, 'error'); return; }
+    showToast('已将 ' + card.name + ' 放入' + externalZoneLabel(zoneVal));
+  });
+}
+
+// ---------- Pack Opening ----------
+window._packSets = [];
+window._openedPack = [];
+window._packPlaced = {};
+window._packBattleId = null;
+
+function showOpenPackModal(battleId) {
+  window._packBattleId = battleId;
+  var html = '<div id="pack-modal-content" style="display:flex;flex-direction:column;padding:4px 0">'
+    + '<div style="display:flex;gap:8px;margin-bottom:10px">'
+    + '<input id="pack-set-filter" type="text" placeholder="筛选系列名称或代码..." style="flex:1;padding:8px 12px;background:rgba(30,40,60,0.6);border:1px solid rgba(100,120,160,0.3);border-radius:4px;color:#e0e4f0;font-size:0.9rem" oninput="filterPackSets()">'
+    + '</div>'
+    + '<div id="pack-set-list" style="max-height:55vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;padding:2px">加载系列中...</div>'
+    + '</div>';
+  showModal('开包 - 选择系列', html);
+  loadPackSets();
+}
+
+async function loadPackSets() {
+  var listEl = document.getElementById('pack-set-list');
+  try {
+    var res = await api('/api/sets');
+    window._packSets = res.sets || [];
+    renderPackSets(window._packSets);
+  } catch (err) {
+    if (listEl) listEl.innerHTML = '<div style="color:#e74c3c;padding:12px;font-size:0.85rem">加载失败: ' + escapeHtml(err.message) + '</div>';
+  }
+}
+
+function renderPackSets(sets) {
+  var listEl = document.getElementById('pack-set-list');
+  if (!listEl) return;
+  if (!sets.length) { listEl.innerHTML = '<div style="color:rgba(160,180,200,0.6);padding:16px;text-align:center;font-size:0.85rem">没有匹配的系列</div>'; return; }
+  listEl.innerHTML = '';
+  sets.forEach(function(s) {
+    var div = document.createElement('div');
+    div.className = 'pack-set-item';
+    div.innerHTML = '<span style="font-weight:600">' + escapeHtml(s.name) + '</span>'
+      + '<span style="color:var(--text-muted);font-size:0.75rem;margin-left:8px">' + escapeHtml((s.code || '').toUpperCase()) + ' · ' + (s.card_count || 0) + '张</span>';
+    div.addEventListener('click', function() { openPackForSet(s.code, s.name); });
+    listEl.appendChild(div);
+  });
+}
+
+function filterPackSets() {
+  var f = (document.getElementById('pack-set-filter').value || '').toLowerCase();
+  var sets = (window._packSets || []).filter(function(s) {
+    return !f || (s.name || '').toLowerCase().indexOf(f) >= 0 || (s.code || '').toLowerCase().indexOf(f) >= 0;
+  });
+  renderPackSets(sets);
+}
+
+async function openPackForSet(code, name) {
+  var contentEl = document.getElementById('pack-modal-content');
+  if (contentEl) contentEl.innerHTML = '<div style="text-align:center;color:rgba(160,180,200,0.7);padding:32px 0;font-size:0.9rem">正在开启 ' + escapeHtml(name) + ' 的卡包...</div>';
+  try {
+    var res = await api('/api/cards/open-pack', { method: 'POST', body: JSON.stringify({ set_code: code }) });
+    window._openedPack = res.cards || [];
+    window._packPlaced = {};
+    renderOpenedPack(code, res.set_name || name);
+  } catch (err) {
+    if (contentEl) contentEl.innerHTML = '<div style="color:#e74c3c;padding:24px;text-align:center;font-size:0.85rem">开包失败: ' + escapeHtml(err.message) + '</div>'
+      + '<div style="text-align:center;margin-top:10px"><button class="btn btn-secondary" onclick="showOpenPackModal(window._packBattleId)">返回选择系列</button></div>';
+  }
+}
+
+function renderOpenedPack(code, setName) {
+  var contentEl = document.getElementById('pack-modal-content');
+  if (!contentEl) return;
+  var html = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:8px;flex-wrap:wrap">'
+    + '<div style="font-weight:600">' + escapeHtml(setName || (code || '').toUpperCase())
+    + ' <span style="color:var(--text-muted);font-size:0.8rem;font-weight:400">剩余 <span id="pack-remaining">' + packRemainingCount() + '</span> 张</span></div>'
+    + '<button class="btn btn-secondary" style="padding:6px 10px;font-size:0.8rem" onclick="showOpenPackModal(window._packBattleId)">换系列</button>'
+    + '</div>'
+    + '<div style="font-size:0.75rem;color:rgba(160,180,200,0.6);margin-bottom:8px">左键点击卡图：放入战场 · 右键点击卡图：选择其他区域（手牌/坟场/牌库/放逐区等）· 悬浮查看大图</div>'
+    + '<div id="pack-cards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px;max-height:52vh;overflow-y:auto;padding:4px"></div>';
+  contentEl.innerHTML = html;
+  var grid = document.getElementById('pack-cards');
+  window._openedPack.forEach(function(card, idx) {
+    grid.appendChild(buildPackCardItem(card, idx));
+  });
+}
+
+function packRemainingCount() {
+  var n = 0;
+  window._openedPack.forEach(function(c, i) { if (!window._packPlaced[i]) n++; });
+  return n;
+}
+
+function rarityShortLabel(r) {
+  return { common: 'C', uncommon: 'U', rare: 'R', mythic: 'M' }[r] || 'C';
+}
+
+function buildPackCardItem(card, idx) {
+  var item = document.createElement('div');
+  item.className = 'pack-card-item' + (window._packPlaced[idx] ? ' placed' : '');
+  item.setAttribute('data-pack-idx', idx);
+  if (card.image_small || card.image) {
+    var img = document.createElement('img');
+    img.src = card.image_small || card.image;
+    img.alt = card.name;
+    img.loading = 'lazy';
+    item.appendChild(img);
+  } else {
+    var ph = document.createElement('div');
+    ph.className = 'alchemy-card-name';
+    ph.textContent = card.name;
+    item.appendChild(ph);
+  }
+  var rar = document.createElement('div');
+  rar.className = 'pack-rarity pack-rarity-' + (card.rarity || 'common');
+  rar.textContent = rarityShortLabel(card.rarity);
+  item.appendChild(rar);
+  attachExternalCardHover(item, card);
+  if (!window._packPlaced[idx]) {
+    item.addEventListener('click', function() { placePackCard(idx, 'battlefield'); });
+    item.addEventListener('contextmenu', function(e) {
+      showExternalCardZoneMenu(e, card.name, function(zoneVal) { placePackCard(idx, zoneVal); });
+    });
+  }
+  return item;
+}
+
+function placePackCard(idx, zoneVal) {
+  var card = window._openedPack[idx];
+  if (!card || window._packPlaced[idx]) return;
+  zoneVal = zoneVal || 'battlefield';
+  var zp = parseExternalZone(zoneVal);
+  var battleId = window._packBattleId;
+  var payload = { type: 'place_external_card', card: card };
+  for (var k in zp) payload[k] = zp[k];
+  mtgaAction(battleId, payload).then(function(res) {
+    if (res && res.error) { showToast(res.error, 'error'); return; }
+    window._packPlaced[idx] = true;
+    showToast(card.name + ' → ' + externalZoneLabel(zoneVal));
+    var item = document.querySelector('.pack-card-item[data-pack-idx="' + idx + '"]');
+    if (item) { item.classList.add('placed'); item.style.pointerEvents = 'none'; }
+    var rem = document.getElementById('pack-remaining');
+    if (rem) rem.textContent = packRemainingCount();
+  });
 }
 
 // ============================================================

@@ -1485,6 +1485,25 @@ app.get('/api/cards/token-search', authMiddleware, async (req, res) => {
   }
 });
 
+// Open a booster pack for a set (reuses the same pack logic as limited/sealed events)
+app.post('/api/cards/open-pack', authMiddleware, async (req, res) => {
+  try {
+    const setCode = (req.body.set_code || '').trim().toLowerCase();
+    if (!setCode) return res.status(400).json({ error: '请选择一个系列' });
+    const setCards = await fetchSetCards(setCode);
+    const totalCards = (setCards.common || []).length + (setCards.uncommon || []).length +
+      (setCards.rare || []).length + (setCards.mythic || []).length;
+    if (totalCards === 0) return res.status(400).json({ error: '该系列没有可用卡牌' });
+    const pack = generateSetBooster(setCards);
+    // Resolve set display name from the first card that carries it
+    let setName = '';
+    for (const c of pack) { if (c.set_name) { setName = c.set_name; break; } }
+    res.json({ set_code: setCode, set_name: setName, cards: pack });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Batch search cards by name (uses Scryfall /cards/collection for efficiency)
 app.post('/api/cards/batch-search', authMiddleware, async (req, res) => {
   try {
@@ -4189,6 +4208,50 @@ function processGameAction(gs, userId, action) {
       me.battlefield.push(token);
       gs.log.push(me.name + ' 创建了一个 ' + tokenName + (isCreature ? ' (' + token.power + '/' + token.toughness + ')' : ''));
       return { success: true };
+    }
+    case 'place_external_card': {
+      const data = action.card;
+      if (!data || !data.name) return { error: '缺少卡牌数据' };
+      const zone = action.to_zone || 'battlefield';
+      const validZones = ['hand', 'battlefield', 'graveyard', 'exile', 'library', 'outside_game'];
+      if (!validZones.includes(zone)) return { error: '无效的区域' };
+      // Build a NON-token card instance so it persists across zones like a normal card
+      const instanceId = 'card_' + (++cardInstanceCounter) + '_' + Date.now().toString(36);
+      const card = {
+        id: instanceId, instanceId,
+        name: data.name, cardName: data.name,
+        manaCost: data.manaCost || data.mana_cost || '', cmc: data.cmc || 0,
+        type: data.type || data.type_line || '',
+        colors: Array.isArray(data.colors) ? data.colors.slice() : [],
+        color_identity: Array.isArray(data.color_identity) ? data.color_identity.slice() : [],
+        rarity: data.rarity || 'common',
+        text: data.text || data.oracle_text || '',
+        power: data.power != null ? String(data.power) : null,
+        toughness: data.toughness != null ? String(data.toughness) : null,
+        loyalty: data.loyalty != null ? data.loyalty : null,
+        keywords: Array.isArray(data.keywords) ? data.keywords.slice() : [],
+        image: data.image || null, image_small: data.image_small || null, image_large: data.image || null,
+        image_back: data.image_back || null, image_small_back: data.image_small_back || null,
+        type_back: data.type_back || null, loyalty_back: data.loyalty_back || null,
+        set: data.set || '', set_name: data.set_name || '',
+        scryfall_id: data.scryfall_id || data.id || null,
+        tapped: false, counters: {}, damage_marked: 0
+      };
+      if (zone === 'library') {
+        const library_position = action.library_position;
+        if (library_position === 'bottom') {
+          me.library.push(card);
+        } else {
+          const pos = parseInt(library_position);
+          if (pos && pos > 0) me.library.splice(pos - 1, 0, card);
+          else me.library.unshift(card);
+        }
+      } else {
+        me[zone].push(card);
+      }
+      const zoneNames = { hand: '手牌', battlefield: '战场', graveyard: '坟场', exile: '放逐区', library: '牌库', outside_game: '游戏外' };
+      gs.log.push(me.name + ' 通过炼金将 ' + card.name + ' 放入' + (zoneNames[zone] || zone));
+      return { success: true, card_id: instanceId };
     }
     case 'copy_permanent': {
       const { card_id } = action;
