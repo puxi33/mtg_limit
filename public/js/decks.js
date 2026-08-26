@@ -551,6 +551,11 @@ function renderDeckDetailUI(el) {
         '</div>' +
         '<div id="deck-search-results" class="draft-pick-scroll" style="min-height:0;max-height:140px;padding:4px 0"></div>' +
       '</div>' +
+      '<!-- Sideboard strip (horizontal, above columns) -->' +
+      '<div class="draft-pick-strip" id="deck-sideboard-strip" style="min-height:48px;flex-direction:row;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 12px">' +
+        '<span style="font-weight:600;color:var(--text-bright);font-size:0.85rem;flex-shrink:0">备牌 <span class="text-muted" id="deck-sideboard-count" style="font-weight:400">0张</span></span>' +
+        '<div id="deck-sideboard-cards" class="draft-pick-scroll" style="display:flex;gap:4px;flex-wrap:nowrap;overflow-x:auto;min-height:0;max-height:140px;padding:2px 0;flex:1"></div>' +
+      '</div>' +
       '<!-- Column layout -->' +
       '<div class="draft-columns-area" id="deck-columns-area">' +
         '<div class="draft-columns-header">' +

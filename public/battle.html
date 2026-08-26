@@ -1073,11 +1073,28 @@
           }
           // Store all player keys for tab switching
           state.allPlayerKeys = Object.keys(gs.players);
-          // Default opponent: first other player
-          state.oppKey = state.allPlayerKeys.find(k => k !== state.myKey) || 'p2';
+          if (!state.myKey) {
+            // Not a participant — spectator mode
+            state.isSpectator = true;
+            state.oppKey = null;
+          } else {
+            state.isSpectator = false;
+            // Default opponent: first other player
+            state.oppKey = state.allPlayerKeys.find(k => k !== state.myKey) || 'p2';
+          }
         } else {
-          state.myKey = String(battle.player1_id) === String(state.user.id) ? 'p1' : 'p2';
-          state.oppKey = state.myKey === 'p1' ? 'p2' : 'p1';
+          var _isP1 = String(battle.player1_id) === String(state.user.id);
+          var _isP2 = String(battle.player2_id) === String(state.user.id);
+          if (!_isP1 && !_isP2) {
+            // Not a participant — spectator mode
+            state.isSpectator = true;
+            state.myKey = null;
+            state.oppKey = null;
+          } else {
+            state.isSpectator = false;
+            state.myKey = _isP1 ? 'p1' : 'p2';
+            state.oppKey = state.myKey === 'p1' ? 'p2' : 'p1';
+          }
           state.allPlayerKeys = ['p1', 'p2'];
         }
         state.isMultiplayer = isMultiplayer;
@@ -1232,7 +1249,11 @@
       const root = document.getElementById('battle-root');
       root.innerHTML = '<div id="content"></div>';
       const contentEl = document.getElementById('content');
-      renderBattleBoard(contentEl, battle, battleId, state.myKey, state.oppKey);
+      if (state.isSpectator) {
+        renderSpectateBoard(contentEl, battle, battleId);
+      } else {
+        renderBattleBoard(contentEl, battle, battleId, state.myKey, state.oppKey);
+      }
 
       // Listen for window resize/zoom to recalculate battlefield spacing
       window.addEventListener('resize', onBattlefieldResize);
@@ -1246,7 +1267,11 @@
         const battle = await api(`/api/battles/${battleId}`);
         const contentEl = document.getElementById('content');
         if (!contentEl) return;
-        renderBattleBoard(contentEl, battle, battleId, state.myKey, state.oppKey);
+        if (state.isSpectator) {
+          renderSpectateBoard(contentEl, battle, battleId);
+        } else {
+          renderBattleBoard(contentEl, battle, battleId, state.myKey, state.oppKey);
+        }
       } catch (err) {
         console.error('Battle update error:', err);
       }

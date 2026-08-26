@@ -3860,10 +3860,14 @@ function processGameAction(gs, userId, action) {
     case 'play_from_deck': {
       const { card_name, deck_zone, deck_idx, to_zone } = action;
       if (!card_name || !deck_zone || deck_idx === undefined || !to_zone) return { error: '缺少参数' };
+      // Optional: take the card from another player's library (e.g. effects that
+      // let you interact with an opponent's library). Defaults to own library.
+      const sourceKey = (action.source_player && gs.players[action.source_player]) ? action.source_player : myKey;
+      const sourcePlayer = gs.players[sourceKey];
       let resolvedCard;
       if (deck_zone === 'library') {
         // Find card in library by id first (exact instance), then by name
-        const lib = me.library || [];
+        const lib = sourcePlayer.library || [];
         let libIdx = -1;
         if (action.card_id) libIdx = lib.findIndex(c => c.id === action.card_id);
         if (libIdx === -1) libIdx = lib.findIndex(c => c.name === card_name);
@@ -3885,10 +3889,11 @@ function processGameAction(gs, userId, action) {
       }
       me[to_zone] = me[to_zone] || [];
       me[to_zone].push(resolvedCard);
-      gs.log.push(me.name + ' 从牌库打出 ' + resolvedCard.name + ' 至' + to_zone + (to_zone === 'battlefield' && action.face_down ? '(背面进场)' : ''));
+      const srcLabel = sourceKey === myKey ? '牌库' : (sourcePlayer.name + ' 的牌库');
+      gs.log.push(me.name + ' 从' + srcLabel + '打出 ' + resolvedCard.name + ' 至' + to_zone + (to_zone === 'battlefield' && action.face_down ? '(背面进场)' : ''));
       // Also remove from revealed_cards if this card was being shown
-      if (gs.revealed_cards && gs.revealed_cards[myKey]) {
-        gs.revealed_cards[myKey] = gs.revealed_cards[myKey].filter(c => c.id !== resolvedCard.id);
+      if (gs.revealed_cards && gs.revealed_cards[sourceKey]) {
+        gs.revealed_cards[sourceKey] = gs.revealed_cards[sourceKey].filter(c => c.id !== resolvedCard.id);
       }
       return { success: true };
     }
@@ -4016,28 +4021,39 @@ function processGameAction(gs, userId, action) {
     case 'position_library_card': {
       const { card_id, position } = action; // position: 'bottom' or a number (1 = top)
       if (!card_id || position === undefined || position === null) return { error: '缺少参数' };
-      const lib = me.library || [];
+      // Optional: operate on another player's library
+      const posTargetKey = (action.target_player && gs.players[action.target_player]) ? action.target_player : myKey;
+      const posTarget = gs.players[posTargetKey];
+      const lib = posTarget.library || [];
       const idx = lib.findIndex(c => c.id === card_id);
       if (idx === -1) return { error: '牌库中没有此牌' };
       const card = lib.splice(idx, 1)[0];
+      const libOwner = posTargetKey === myKey ? '' : posTarget.name + ' 的';
       if (position === 'bottom') {
         lib.push(card);
-        gs.log.push(me.name + ' 将 ' + card.name + ' 置入牌库底');
+        gs.log.push(me.name + ' 将 ' + card.name + ' 置入' + libOwner + '牌库底');
       } else {
         const pos = parseInt(position);
         if (!pos || pos < 1) return { error: '无效的位置' };
         lib.splice(Math.min(pos - 1, lib.length), 0, card);
-        gs.log.push(me.name + ' 将 ' + card.name + ' 置入牌库顶第' + pos + '张');
+        gs.log.push(me.name + ' 将 ' + card.name + ' 置入' + libOwner + '牌库顶第' + pos + '张');
       }
       return { success: true };
     }
     case 'shuffle_library': {
-      if (!me.library || me.library.length < 2) return { success: true };
-      for (let i = me.library.length - 1; i > 0; i--) {
+      // Optional: shuffle another player's library
+      const shufTargetKey = (action.target_player && gs.players[action.target_player]) ? action.target_player : myKey;
+      const shufTarget = gs.players[shufTargetKey];
+      if (!shufTarget.library || shufTarget.library.length < 2) return { success: true };
+      for (let i = shufTarget.library.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
-        [me.library[i], me.library[j]] = [me.library[j], me.library[i]];
+        [shufTarget.library[i], shufTarget.library[j]] = [shufTarget.library[j], shufTarget.library[i]];
       }
-      gs.log.push(me.name + ' 洗牌 (' + me.library.length + ' 张)');
+      if (shufTargetKey === myKey) {
+        gs.log.push(me.name + ' 洗牌 (' + shufTarget.library.length + ' 张)');
+      } else {
+        gs.log.push(me.name + ' 洗牌了 ' + shufTarget.name + ' 的牌库 (' + shufTarget.library.length + ' 张)');
+      }
       return { success: true };
     }
     case 'show_library_cards': {
@@ -4055,6 +4071,26 @@ function processGameAction(gs, userId, action) {
       if (!gs.revealed_cards) gs.revealed_cards = {};
       delete gs.revealed_cards[myKey];
       gs.log.push(me.name + ' 结束了卡牌展示');
+      return { success: true };
+    }
+    case 'peek_hand': {
+      // Look at one specific card in another player's hand.
+      // The peek is logged and recorded so the peeked player is notified.
+      const { card_id } = action;
+      if (!card_id) return { error: '缺少卡牌ID' };
+      if (!opp) return { error: '找不到目标玩家' };
+      const peekCard = (opp.hand || []).find(c => c.id === card_id);
+      if (!peekCard) return { error: '对手手牌中没有此牌' };
+      gs.log.push(me.name + ' 查看了 ' + opp.name + ' 手牌中的一张牌');
+      gs.last_hand_peek = {
+        by: myKey,
+        byName: me.name,
+        target: oppKey,
+        targetName: opp.name,
+        card_id: card_id,
+        card_name: peekCard.name,
+        ts: Date.now()
+      };
       return { success: true };
     }
     case 'add_counter': {
