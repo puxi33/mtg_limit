@@ -5379,6 +5379,489 @@ app.get('/life', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'life.html'));
 });
 
+app.get('/practice', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'practice.html'));
+});
+
+// ============================================================
+// Practice / Quiz System
+// ============================================================
+db.exec(`
+  CREATE TABLE IF NOT EXISTS practice_banks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS practice_chapters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bank_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    sort_order INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (bank_id) REFERENCES practice_banks(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS practice_questions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bank_id INTEGER NOT NULL,
+    chapter_id INTEGER,
+    type TEXT NOT NULL CHECK(type IN ('single','multi')),
+    stem TEXT NOT NULL,
+    options TEXT DEFAULT '[]',
+    answer TEXT DEFAULT '[]',
+    analysis TEXT DEFAULT '',
+    image TEXT DEFAULT '',
+    source_page INTEGER,
+    sort_order INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (bank_id) REFERENCES practice_banks(id) ON DELETE CASCADE,
+    FOREIGN KEY (chapter_id) REFERENCES practice_chapters(id) ON DELETE SET NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS practice_answers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    question_id INTEGER NOT NULL,
+    bank_id INTEGER NOT NULL,
+    user_answer TEXT DEFAULT '[]',
+    is_correct INTEGER DEFAULT 0,
+    answered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (question_id) REFERENCES practice_questions(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS practice_wrong_book (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    question_id INTEGER NOT NULL,
+    wrong_count INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_wrong_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, question_id),
+    FOREIGN KEY (question_id) REFERENCES practice_questions(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS practice_favorites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    question_id INTEGER NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, question_id),
+    FOREIGN KEY (question_id) REFERENCES practice_questions(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+`);
+
+// ---- Practice helpers ----
+// Normalize any option representation to a sorted [{key,text}] array.
+function normalizeOptions(raw) {
+  let pairs = [];
+  if (Array.isArray(raw)) {
+    raw.forEach((o, i) => {
+      if (o && typeof o === 'object') {
+        const key = (o.key || o.label || String.fromCharCode(65 + i)).toString().trim().toUpperCase();
+        const text = (o.text != null ? o.text : (o.value != null ? o.value : o.content)) || '';
+        pairs.push({ key: key.replace(/[^A-Z]/g, '') || String.fromCharCode(65 + i), text: String(text) });
+      } else {
+        pairs.push({ key: String.fromCharCode(65 + i), text: String(o) });
+      }
+    });
+  } else if (raw && typeof raw === 'object') {
+    Object.keys(raw).forEach(k => {
+      pairs.push({ key: k.trim().toUpperCase().replace(/[^A-Z]/g, ''), text: String(raw[k]) });
+    });
+  }
+  pairs = pairs.filter(p => p.key && p.text != null);
+  pairs.sort((a, b) => a.key.localeCompare(b.key));
+  return pairs;
+}
+
+// Normalize an answer to a sorted array of unique letters, e.g. "AC" -> ["A","C"].
+function normalizeAnswer(raw) {
+  let letters = [];
+  if (Array.isArray(raw)) letters = raw.flatMap(x => String(x).toUpperCase().match(/[A-Z]/g) || []);
+  else if (raw != null) letters = String(raw).toUpperCase().match(/[A-Z]/g) || [];
+  return [...new Set(letters)].sort();
+}
+
+function hydrateQuestion(q, userId) {
+  let options = [];
+  try { options = JSON.parse(q.options || '[]'); } catch { options = []; }
+  let answer = [];
+  try { answer = JSON.parse(q.answer || '[]'); } catch { answer = []; }
+  const out = {
+    id: q.id, bank_id: q.bank_id, chapter_id: q.chapter_id, type: q.type,
+    stem: q.stem, options, analysis: q.analysis || '', image: q.image || '',
+    source_page: q.source_page, sort_order: q.sort_order,
+    is_favorite: false, in_wrong_book: false, last_answer: null, last_correct: null
+  };
+  if (userId) {
+    const fav = db.prepare('SELECT 1 FROM practice_favorites WHERE user_id=? AND question_id=?').get(userId, q.id);
+    out.is_favorite = !!fav;
+    const wb = db.prepare('SELECT 1 FROM practice_wrong_book WHERE user_id=? AND question_id=?').get(userId, q.id);
+    out.in_wrong_book = !!wb;
+    const last = db.prepare('SELECT user_answer, is_correct FROM practice_answers WHERE user_id=? AND question_id=? ORDER BY answered_at DESC, id DESC LIMIT 1').get(userId, q.id);
+    if (last) {
+      try { out.last_answer = JSON.parse(last.user_answer || '[]'); } catch { out.last_answer = []; }
+      out.last_correct = !!last.is_correct;
+    }
+  }
+  // answer/explanation hidden in practice payloads unless includeAnswer
+  return { row: out, answer };
+}
+
+// ---- Banks ----
+app.get('/api/practice/banks', authMiddleware, (req, res) => {
+  const banks = db.prepare('SELECT * FROM practice_banks WHERE user_id=? ORDER BY updated_at DESC, created_at DESC').all(req.user.id);
+  const result = banks.map(b => {
+    const chapters = db.prepare('SELECT COUNT(*) c FROM practice_chapters WHERE bank_id=?').get(b.id).c;
+    const questions = db.prepare('SELECT COUNT(*) c FROM practice_questions WHERE bank_id=?').get(b.id).c;
+    const answered = db.prepare('SELECT COUNT(DISTINCT question_id) c FROM practice_answers WHERE user_id=? AND bank_id=?').get(req.user.id, b.id).c;
+    const wrong = db.prepare(`SELECT COUNT(*) c FROM practice_wrong_book wb JOIN practice_questions q ON q.id=wb.question_id WHERE wb.user_id=? AND q.bank_id=?`).get(req.user.id, b.id).c;
+    return { ...b, chapter_count: chapters, question_count: questions, answered_count: answered, wrong_count: wrong };
+  });
+  res.json(result);
+});
+
+app.post('/api/practice/banks', authMiddleware, (req, res) => {
+  const { name, description } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: '题库名称不能为空' });
+  const r = db.prepare('INSERT INTO practice_banks (user_id, name, description) VALUES (?,?,?)').run(req.user.id, name.trim(), description || '');
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=?').get(r.lastInsertRowid);
+  res.status(201).json({ ...bank, chapter_count: 0, question_count: 0 });
+});
+
+app.get('/api/practice/banks/:id', authMiddleware, (req, res) => {
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(req.params.id, req.user.id);
+  if (!bank) return res.status(404).json({ error: '题库不存在' });
+  const chapters = db.prepare('SELECT * FROM practice_chapters WHERE bank_id=? ORDER BY sort_order ASC, id ASC').all(bank.id);
+  const chaptersWithCount = chapters.map(c => ({
+    ...c,
+    question_count: db.prepare('SELECT COUNT(*) c FROM practice_questions WHERE chapter_id=?').get(c.id).c
+  }));
+  const unfiled = db.prepare('SELECT COUNT(*) c FROM practice_questions WHERE bank_id=? AND chapter_id IS NULL').get(bank.id).c;
+  const total = db.prepare('SELECT COUNT(*) c FROM practice_questions WHERE bank_id=?').get(bank.id).c;
+  res.json({ ...bank, chapters: chaptersWithCount, unfiled_count: unfiled, question_count: total });
+});
+
+app.put('/api/practice/banks/:id', authMiddleware, (req, res) => {
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(req.params.id, req.user.id);
+  if (!bank) return res.status(404).json({ error: '题库不存在' });
+  const name = req.body.name != null ? String(req.body.name).trim() : bank.name;
+  const description = req.body.description != null ? String(req.body.description) : bank.description;
+  if (!name) return res.status(400).json({ error: '题库名称不能为空' });
+  db.prepare('UPDATE practice_banks SET name=?, description=?, updated_at=CURRENT_TIMESTAMP WHERE id=?').run(name, description, bank.id);
+  res.json(db.prepare('SELECT * FROM practice_banks WHERE id=?').get(bank.id));
+});
+
+app.delete('/api/practice/banks/:id', authMiddleware, (req, res) => {
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(req.params.id, req.user.id);
+  if (!bank) return res.status(404).json({ error: '题库不存在' });
+  db.prepare('DELETE FROM practice_banks WHERE id=?').run(bank.id);
+  res.json({ ok: true });
+});
+
+// ---- Chapters ----
+app.post('/api/practice/banks/:id/chapters', authMiddleware, (req, res) => {
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(req.params.id, req.user.id);
+  if (!bank) return res.status(404).json({ error: '题库不存在' });
+  const { name } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: '章节名称不能为空' });
+  const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order),0) m FROM practice_chapters WHERE bank_id=?').get(bank.id).m;
+  const r = db.prepare('INSERT INTO practice_chapters (bank_id, name, sort_order) VALUES (?,?,?)').run(bank.id, name.trim(), maxOrder + 1);
+  db.prepare('UPDATE practice_banks SET updated_at=CURRENT_TIMESTAMP WHERE id=?').run(bank.id);
+  res.status(201).json(db.prepare('SELECT * FROM practice_chapters WHERE id=?').get(r.lastInsertRowid));
+});
+
+app.put('/api/practice/chapters/:id', authMiddleware, (req, res) => {
+  const ch = db.prepare('SELECT * FROM practice_chapters WHERE id=?').get(req.params.id);
+  if (!ch) return res.status(404).json({ error: '章节不存在' });
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(ch.bank_id, req.user.id);
+  if (!bank) return res.status(403).json({ error: '无权操作' });
+  const name = req.body.name != null ? String(req.body.name).trim() : ch.name;
+  if (!name) return res.status(400).json({ error: '章节名称不能为空' });
+  db.prepare('UPDATE practice_chapters SET name=? WHERE id=?').run(name, ch.id);
+  res.json(db.prepare('SELECT * FROM practice_chapters WHERE id=?').get(ch.id));
+});
+
+app.delete('/api/practice/chapters/:id', authMiddleware, (req, res) => {
+  const ch = db.prepare('SELECT * FROM practice_chapters WHERE id=?').get(req.params.id);
+  if (!ch) return res.status(404).json({ error: '章节不存在' });
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(ch.bank_id, req.user.id);
+  if (!bank) return res.status(403).json({ error: '无权操作' });
+  // move its questions to unfiled rather than deleting them
+  db.prepare('UPDATE practice_questions SET chapter_id=NULL WHERE chapter_id=?').run(ch.id);
+  db.prepare('DELETE FROM practice_chapters WHERE id=?').run(ch.id);
+  res.json({ ok: true });
+});
+
+// ---- Questions ----
+// List questions for a bank (optionally filtered by chapter / type / flag).
+app.get('/api/practice/banks/:id/questions', authMiddleware, (req, res) => {
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(req.params.id, req.user.id);
+  if (!bank) return res.status(404).json({ error: '题库不存在' });
+  const { chapter_id, type, unfiled } = req.query;
+  let sql = 'SELECT * FROM practice_questions WHERE bank_id=?';
+  const params = [bank.id];
+  if (unfiled === '1' || unfiled === 'true') { sql += ' AND chapter_id IS NULL'; }
+  else if (chapter_id) { sql += ' AND chapter_id=?'; params.push(chapter_id); }
+  if (type === 'single' || type === 'multi') { sql += ' AND type=?'; params.push(type); }
+  sql += ' ORDER BY sort_order ASC, id ASC';
+  const rows = db.prepare(sql).all(...params);
+  const includeAnswer = req.query.with_answer === '1' || req.query.with_answer === 'true';
+  const questions = rows.map(q => {
+    const { row, answer } = hydrateQuestion(q, req.user.id);
+    if (includeAnswer) row.answer = answer;
+    return row;
+  });
+  res.json({ bank_id: bank.id, count: questions.length, questions });
+});
+
+app.post('/api/practice/questions', authMiddleware, (req, res) => {
+  const { bank_id, chapter_id, type, stem, options, answer, analysis, image } = req.body;
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(bank_id, req.user.id);
+  if (!bank) return res.status(404).json({ error: '题库不存在' });
+  if (!stem || !stem.trim()) return res.status(400).json({ error: '题干不能为空' });
+  const opts = normalizeOptions(options);
+  const ans = normalizeAnswer(answer);
+  if (opts.length < 2) return res.status(400).json({ error: '至少需要两个选项' });
+  if (ans.length === 0) return res.status(400).json({ error: '答案不能为空' });
+  const qtype = type === 'multi' ? 'multi' : (ans.length > 1 ? 'multi' : 'single');
+  if (ans.some(a => !opts.some(o => o.key === a))) return res.status(400).json({ error: '答案字母必须存在于选项中' });
+  const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order),0) m FROM practice_questions WHERE bank_id=?').get(bank.id).m;
+  const r = db.prepare(`INSERT INTO practice_questions (bank_id, chapter_id, type, stem, options, answer, analysis, image, sort_order)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(bank.id, chapter_id || null, qtype, stem.trim(), JSON.stringify(opts), JSON.stringify(ans), analysis || '', image || '', maxOrder + 1);
+  db.prepare('UPDATE practice_banks SET updated_at=CURRENT_TIMESTAMP WHERE id=?').run(bank.id);
+  const q = db.prepare('SELECT * FROM practice_questions WHERE id=?').get(r.lastInsertRowid);
+  const { row, answer: a } = hydrateQuestion(q, req.user.id); row.answer = a;
+  res.status(201).json(row);
+});
+
+app.put('/api/practice/questions/:id', authMiddleware, (req, res) => {
+  const q = db.prepare('SELECT * FROM practice_questions WHERE id=?').get(req.params.id);
+  if (!q) return res.status(404).json({ error: '题目不存在' });
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(q.bank_id, req.user.id);
+  if (!bank) return res.status(403).json({ error: '无权操作' });
+  const stem = req.body.stem != null ? String(req.body.stem).trim() : q.stem;
+  if (!stem) return res.status(400).json({ error: '题干不能为空' });
+  const opts = req.body.options != null ? normalizeOptions(req.body.options) : JSON.parse(q.options || '[]');
+  const ans = req.body.answer != null ? normalizeAnswer(req.body.answer) : JSON.parse(q.answer || '[]');
+  if (opts.length < 2) return res.status(400).json({ error: '至少需要两个选项' });
+  if (ans.length === 0) return res.status(400).json({ error: '答案不能为空' });
+  if (ans.some(a => !opts.some(o => o.key === a))) return res.status(400).json({ error: '答案字母必须存在于选项中' });
+  const qtype = req.body.type === 'multi' || req.body.type === 'single' ? req.body.type : (ans.length > 1 ? 'multi' : 'single');
+  const analysis = req.body.analysis != null ? String(req.body.analysis) : q.analysis;
+  const image = req.body.image != null ? String(req.body.image) : q.image;
+  const chapter_id = req.body.chapter_id !== undefined ? (req.body.chapter_id || null) : q.chapter_id;
+  db.prepare(`UPDATE practice_questions SET chapter_id=?, type=?, stem=?, options=?, answer=?, analysis=?, image=? WHERE id=?`)
+    .run(chapter_id, qtype, stem, JSON.stringify(opts), JSON.stringify(ans), analysis, image, q.id);
+  const nq = db.prepare('SELECT * FROM practice_questions WHERE id=?').get(q.id);
+  const { row, answer: a } = hydrateQuestion(nq, req.user.id); row.answer = a;
+  res.json(row);
+});
+
+app.delete('/api/practice/questions/:id', authMiddleware, (req, res) => {
+  const q = db.prepare('SELECT * FROM practice_questions WHERE id=?').get(req.params.id);
+  if (!q) return res.status(404).json({ error: '题目不存在' });
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(q.bank_id, req.user.id);
+  if (!bank) return res.status(403).json({ error: '无权操作' });
+  db.prepare('DELETE FROM practice_questions WHERE id=?').run(q.id);
+  res.json({ ok: true });
+});
+
+// ---- JSON import (multi-bank + chapters) ----
+// Accepts either { banks: [ ... ] } or a single bank object { name, chapters, questions }.
+app.post('/api/practice/import', authMiddleware, (req, res) => {
+  let payload = req.body;
+  if (!payload || typeof payload !== 'object') return res.status(400).json({ error: '导入内容无效' });
+  let banks = Array.isArray(payload.banks) ? payload.banks : [payload];
+  if (!banks.length) return res.status(400).json({ error: '没有可导入的题库' });
+
+  const errors = [];
+  const summary = { banks: 0, chapters: 0, questions: 0, skipped: 0 };
+
+  const insertBank = db.prepare('INSERT INTO practice_banks (user_id, name, description) VALUES (?,?,?)');
+  const insertChapter = db.prepare('INSERT INTO practice_chapters (bank_id, name, sort_order) VALUES (?,?,?)');
+  const insertQuestion = db.prepare(`INSERT INTO practice_questions (bank_id, chapter_id, type, stem, options, answer, analysis, image, source_page, sort_order)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`);
+
+  const runImport = db.transaction(() => {
+    banks.forEach((bankDef, bi) => {
+      const bankName = (bankDef.name || `导入题库 ${bi + 1}`).toString().trim();
+      const bankDesc = (bankDef.description || '').toString();
+      const bankId = insertBank.run(req.user.id, bankName, bankDesc).lastInsertRowid;
+      summary.banks++;
+      let qOrder = 0;
+
+      const addQuestion = (qDef, chapterId) => {
+        if (!qDef || typeof qDef !== 'object') { summary.skipped++; return; }
+        const stem = (qDef.stem != null ? qDef.stem : (qDef.question != null ? qDef.question : qDef.text)).toString().trim();
+        if (!stem) { errors.push(`题库「${bankName}」: 跳过一道题干为空的题目`); summary.skipped++; return; }
+        const opts = normalizeOptions(qDef.options != null ? qDef.options : qDef.choices);
+        const ans = normalizeAnswer(qDef.answer != null ? qDef.answer : qDef.correct);
+        if (opts.length < 2) { errors.push(`题库「${bankName}」: 「${stem.slice(0, 20)}」选项不足，已跳过`); summary.skipped++; return; }
+        if (ans.length === 0) { errors.push(`题库「${bankName}」: 「${stem.slice(0, 20)}」缺少答案，已跳过`); summary.skipped++; return; }
+        if (ans.some(a => !opts.some(o => o.key === a))) { errors.push(`题库「${bankName}」: 「${stem.slice(0, 20)}」答案字母不在选项中，已跳过`); summary.skipped++; return; }
+        const qtype = qDef.type === 'multi' || qDef.type === 'single' ? qDef.type : (ans.length > 1 ? 'multi' : 'single');
+        qOrder++;
+        insertQuestion.run(bankId, chapterId, qtype, stem, JSON.stringify(opts), JSON.stringify(ans),
+          (qDef.analysis != null ? qDef.analysis : (qDef.explanation != null ? qDef.explanation : '')).toString(),
+          (qDef.image || '').toString(), qDef.source_page != null ? Number(qDef.source_page) : null, qOrder);
+        summary.questions++;
+      };
+
+      // bank-level questions (no chapter)
+      if (Array.isArray(bankDef.questions)) bankDef.questions.forEach(q => addQuestion(q, null));
+
+      // chapters
+      if (Array.isArray(bankDef.chapters)) {
+        bankDef.chapters.forEach((chDef, ci) => {
+          const chName = (typeof chDef === 'string' ? chDef : (chDef.name || `章节 ${ci + 1}`)).toString().trim();
+          const chId = insertChapter.run(bankId, chName, ci + 1).lastInsertRowid;
+          summary.chapters++;
+          const qs = (typeof chDef === 'object' && Array.isArray(chDef.questions)) ? chDef.questions : [];
+          qs.forEach(q => addQuestion(q, chId));
+        });
+      }
+    });
+  });
+
+  try {
+    runImport();
+  } catch (e) {
+    return res.status(500).json({ error: '导入失败: ' + e.message });
+  }
+  res.status(201).json({ ok: true, summary, errors: errors.slice(0, 50), error_count: errors.length });
+});
+
+// ---- Answer / grading ----
+app.post('/api/practice/answer', authMiddleware, (req, res) => {
+  const { question_id, answer } = req.body;
+  const q = db.prepare('SELECT * FROM practice_questions WHERE id=?').get(question_id);
+  if (!q) return res.status(404).json({ error: '题目不存在' });
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(q.bank_id, req.user.id);
+  if (!bank) return res.status(403).json({ error: '无权操作' });
+  const correct = normalizeAnswer(JSON.parse(q.answer || '[]'));
+  const given = normalizeAnswer(answer);
+  const isCorrect = given.length > 0 && given.join('') === correct.join('');
+
+  db.prepare('INSERT INTO practice_answers (user_id, question_id, bank_id, user_answer, is_correct) VALUES (?,?,?,?,?)')
+    .run(req.user.id, q.id, q.bank_id, JSON.stringify(given), isCorrect ? 1 : 0);
+
+  if (isCorrect) {
+    // mastered -> remove from wrong book
+    db.prepare('DELETE FROM practice_wrong_book WHERE user_id=? AND question_id=?').run(req.user.id, q.id);
+  } else {
+    const existing = db.prepare('SELECT id, wrong_count FROM practice_wrong_book WHERE user_id=? AND question_id=?').get(req.user.id, q.id);
+    if (existing) {
+      db.prepare('UPDATE practice_wrong_book SET wrong_count=wrong_count+1, last_wrong_at=CURRENT_TIMESTAMP WHERE id=?').run(existing.id);
+    } else {
+      db.prepare('INSERT INTO practice_wrong_book (user_id, question_id, wrong_count) VALUES (?,?,1)').run(req.user.id, q.id);
+    }
+  }
+
+  res.json({ correct: isCorrect, correct_answer: correct, your_answer: given, analysis: q.analysis || '' });
+});
+
+// ---- Wrong book ----
+app.get('/api/practice/wrong-book', authMiddleware, (req, res) => {
+  const { bank_id } = req.query;
+  let sql = `SELECT q.*, wb.wrong_count, wb.last_wrong_at FROM practice_wrong_book wb
+    JOIN practice_questions q ON q.id = wb.question_id
+    JOIN practice_banks b ON b.id = q.bank_id
+    WHERE wb.user_id=? AND b.user_id=?`;
+  const params = [req.user.id, req.user.id];
+  if (bank_id) { sql += ' AND q.bank_id=?'; params.push(bank_id); }
+  sql += ' ORDER BY wb.last_wrong_at DESC, wb.id DESC';
+  const rows = db.prepare(sql).all(...params);
+  const questions = rows.map(q => {
+    const { row, answer } = hydrateQuestion(q, req.user.id);
+    row.answer = answer; row.wrong_count = q.wrong_count;
+    return row;
+  });
+  res.json({ count: questions.length, questions });
+});
+
+app.delete('/api/practice/wrong-book/:questionId', authMiddleware, (req, res) => {
+  db.prepare(`DELETE FROM practice_wrong_book WHERE user_id=? AND question_id=?`).run(req.user.id, req.params.questionId);
+  res.json({ ok: true });
+});
+
+// ---- Favorites ----
+app.get('/api/practice/favorites', authMiddleware, (req, res) => {
+  const { bank_id } = req.query;
+  let sql = `SELECT q.* FROM practice_favorites f
+    JOIN practice_questions q ON q.id = f.question_id
+    JOIN practice_banks b ON b.id = q.bank_id
+    WHERE f.user_id=? AND b.user_id=?`;
+  const params = [req.user.id, req.user.id];
+  if (bank_id) { sql += ' AND q.bank_id=?'; params.push(bank_id); }
+  sql += ' ORDER BY f.created_at DESC, f.id DESC';
+  const rows = db.prepare(sql).all(...params);
+  const questions = rows.map(q => {
+    const { row, answer } = hydrateQuestion(q, req.user.id);
+    row.answer = answer;
+    return row;
+  });
+  res.json({ count: questions.length, questions });
+});
+
+app.post('/api/practice/favorites', authMiddleware, (req, res) => {
+  const { question_id } = req.body;
+  const q = db.prepare('SELECT * FROM practice_questions WHERE id=?').get(question_id);
+  if (!q) return res.status(404).json({ error: '题目不存在' });
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(q.bank_id, req.user.id);
+  if (!bank) return res.status(403).json({ error: '无权操作' });
+  const existing = db.prepare('SELECT id FROM practice_favorites WHERE user_id=? AND question_id=?').get(req.user.id, q.id);
+  if (existing) {
+    db.prepare('DELETE FROM practice_favorites WHERE id=?').run(existing.id);
+    return res.json({ ok: true, is_favorite: false });
+  }
+  db.prepare('INSERT INTO practice_favorites (user_id, question_id) VALUES (?,?)').run(req.user.id, q.id);
+  res.json({ ok: true, is_favorite: true });
+});
+
+app.delete('/api/practice/favorites/:questionId', authMiddleware, (req, res) => {
+  db.prepare('DELETE FROM practice_favorites WHERE user_id=? AND question_id=?').run(req.user.id, req.params.questionId);
+  res.json({ ok: true, is_favorite: false });
+});
+
+// ---- Stats ----
+app.get('/api/practice/stats', authMiddleware, (req, res) => {
+  const { bank_id } = req.query;
+  const scope = [];
+  let bankFilter = '';
+  if (bank_id) { bankFilter = ' AND bank_id=?'; scope.push(bank_id); }
+  const totalQ = db.prepare(`SELECT COUNT(*) c FROM practice_questions q JOIN practice_banks b ON b.id=q.bank_id WHERE b.user_id=?${bank_id ? ' AND q.bank_id=?' : ''}`)
+    .get(...(bank_id ? [req.user.id, bank_id] : [req.user.id])).c;
+  const answeredAgg = db.prepare(`SELECT COUNT(*) total, SUM(is_correct) correct, COUNT(DISTINCT question_id) distinct_q
+    FROM practice_answers WHERE user_id=?${bankFilter}`).get(req.user.id, ...scope);
+  const wrongCount = db.prepare(`SELECT COUNT(*) c FROM practice_wrong_book wb JOIN practice_questions q ON q.id=wb.question_id
+    JOIN practice_banks b ON b.id=q.bank_id WHERE wb.user_id=? AND b.user_id=?${bank_id ? ' AND q.bank_id=?' : ''}`)
+    .get(...(bank_id ? [req.user.id, req.user.id, bank_id] : [req.user.id, req.user.id])).c;
+  const favCount = db.prepare(`SELECT COUNT(*) c FROM practice_favorites f JOIN practice_questions q ON q.id=f.question_id
+    JOIN practice_banks b ON b.id=q.bank_id WHERE f.user_id=? AND b.user_id=?${bank_id ? ' AND q.bank_id=?' : ''}`)
+    .get(...(bank_id ? [req.user.id, req.user.id, bank_id] : [req.user.id, req.user.id])).c;
+  const total = answeredAgg.total || 0;
+  const correct = answeredAgg.correct || 0;
+  res.json({
+    total_questions: totalQ,
+    answered_distinct: answeredAgg.distinct_q || 0,
+    answered_total: total,
+    correct_total: correct,
+    accuracy: total ? Math.round((correct / total) * 1000) / 10 : 0,
+    coverage: totalQ ? Math.round(((answeredAgg.distinct_q || 0) / totalQ) * 1000) / 10 : 0,
+    wrong_count: wrongCount,
+    favorite_count: favCount
+  });
+});
+
 // ============================================================
 // SPA Fallback
 // ============================================================
