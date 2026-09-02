@@ -5538,7 +5538,7 @@ app.post('/api/practice/banks', authMiddleware, (req, res) => {
 });
 
 app.get('/api/practice/banks/:id', authMiddleware, (req, res) => {
-  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(req.params.id, req.user.id);
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=?').get(req.params.id);
   if (!bank) return res.status(404).json({ error: '题库不存在' });
   const chapters = db.prepare('SELECT * FROM practice_chapters WHERE bank_id=? ORDER BY sort_order ASC, id ASC').all(bank.id);
   const chaptersWithCount = chapters.map(c => ({
@@ -5551,7 +5551,7 @@ app.get('/api/practice/banks/:id', authMiddleware, (req, res) => {
 });
 
 app.put('/api/practice/banks/:id', authMiddleware, (req, res) => {
-  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(req.params.id, req.user.id);
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=?').get(req.params.id);
   if (!bank) return res.status(404).json({ error: '题库不存在' });
   const name = req.body.name != null ? String(req.body.name).trim() : bank.name;
   const description = req.body.description != null ? String(req.body.description) : bank.description;
@@ -5561,7 +5561,7 @@ app.put('/api/practice/banks/:id', authMiddleware, (req, res) => {
 });
 
 app.delete('/api/practice/banks/:id', authMiddleware, (req, res) => {
-  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(req.params.id, req.user.id);
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=?').get(req.params.id);
   if (!bank) return res.status(404).json({ error: '题库不存在' });
   db.prepare('DELETE FROM practice_banks WHERE id=?').run(bank.id);
   res.json({ ok: true });
@@ -5569,7 +5569,7 @@ app.delete('/api/practice/banks/:id', authMiddleware, (req, res) => {
 
 // ---- Chapters ----
 app.post('/api/practice/banks/:id/chapters', authMiddleware, (req, res) => {
-  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(req.params.id, req.user.id);
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=?').get(req.params.id);
   if (!bank) return res.status(404).json({ error: '题库不存在' });
   const { name } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: '章节名称不能为空' });
@@ -5582,7 +5582,7 @@ app.post('/api/practice/banks/:id/chapters', authMiddleware, (req, res) => {
 app.put('/api/practice/chapters/:id', authMiddleware, (req, res) => {
   const ch = db.prepare('SELECT * FROM practice_chapters WHERE id=?').get(req.params.id);
   if (!ch) return res.status(404).json({ error: '章节不存在' });
-  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(ch.bank_id, req.user.id);
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=?').get(ch.bank_id);
   if (!bank) return res.status(403).json({ error: '无权操作' });
   const name = req.body.name != null ? String(req.body.name).trim() : ch.name;
   if (!name) return res.status(400).json({ error: '章节名称不能为空' });
@@ -5593,7 +5593,7 @@ app.put('/api/practice/chapters/:id', authMiddleware, (req, res) => {
 app.delete('/api/practice/chapters/:id', authMiddleware, (req, res) => {
   const ch = db.prepare('SELECT * FROM practice_chapters WHERE id=?').get(req.params.id);
   if (!ch) return res.status(404).json({ error: '章节不存在' });
-  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(ch.bank_id, req.user.id);
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=?').get(ch.bank_id);
   if (!bank) return res.status(403).json({ error: '无权操作' });
   // move its questions to unfiled rather than deleting them
   db.prepare('UPDATE practice_questions SET chapter_id=NULL WHERE chapter_id=?').run(ch.id);
@@ -5604,7 +5604,7 @@ app.delete('/api/practice/chapters/:id', authMiddleware, (req, res) => {
 // ---- Questions ----
 // List questions for a bank (optionally filtered by chapter / type / flag).
 app.get('/api/practice/banks/:id/questions', authMiddleware, (req, res) => {
-  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(req.params.id, req.user.id);
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=?').get(req.params.id);
   if (!bank) return res.status(404).json({ error: '题库不存在' });
   const { chapter_id, type, unfiled } = req.query;
   let sql = 'SELECT * FROM practice_questions WHERE bank_id=?';
@@ -5625,7 +5625,7 @@ app.get('/api/practice/banks/:id/questions', authMiddleware, (req, res) => {
 
 app.post('/api/practice/questions', authMiddleware, (req, res) => {
   const { bank_id, chapter_id, type, stem, options, answer, analysis, image } = req.body;
-  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(bank_id, req.user.id);
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=?').get(bank_id);
   if (!bank) return res.status(404).json({ error: '题库不存在' });
   if (!stem || !stem.trim()) return res.status(400).json({ error: '题干不能为空' });
   const opts = normalizeOptions(options);
@@ -5646,7 +5646,7 @@ app.post('/api/practice/questions', authMiddleware, (req, res) => {
 app.put('/api/practice/questions/:id', authMiddleware, (req, res) => {
   const q = db.prepare('SELECT * FROM practice_questions WHERE id=?').get(req.params.id);
   if (!q) return res.status(404).json({ error: '题目不存在' });
-  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(q.bank_id, req.user.id);
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=?').get(q.bank_id);
   if (!bank) return res.status(403).json({ error: '无权操作' });
   const stem = req.body.stem != null ? String(req.body.stem).trim() : q.stem;
   if (!stem) return res.status(400).json({ error: '题干不能为空' });
@@ -5669,7 +5669,7 @@ app.put('/api/practice/questions/:id', authMiddleware, (req, res) => {
 app.delete('/api/practice/questions/:id', authMiddleware, (req, res) => {
   const q = db.prepare('SELECT * FROM practice_questions WHERE id=?').get(req.params.id);
   if (!q) return res.status(404).json({ error: '题目不存在' });
-  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(q.bank_id, req.user.id);
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=?').get(q.bank_id);
   if (!bank) return res.status(403).json({ error: '无权操作' });
   db.prepare('DELETE FROM practice_questions WHERE id=?').run(q.id);
   res.json({ ok: true });
@@ -5745,7 +5745,7 @@ app.post('/api/practice/answer', authMiddleware, (req, res) => {
   const { question_id, answer } = req.body;
   const q = db.prepare('SELECT * FROM practice_questions WHERE id=?').get(question_id);
   if (!q) return res.status(404).json({ error: '题目不存在' });
-  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(q.bank_id, req.user.id);
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=?').get(q.bank_id);
   if (!bank) return res.status(403).json({ error: '无权操作' });
   const correct = normalizeAnswer(JSON.parse(q.answer || '[]'));
   const given = normalizeAnswer(answer);
@@ -5816,7 +5816,7 @@ app.post('/api/practice/favorites', authMiddleware, (req, res) => {
   const { question_id } = req.body;
   const q = db.prepare('SELECT * FROM practice_questions WHERE id=?').get(question_id);
   if (!q) return res.status(404).json({ error: '题目不存在' });
-  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=? AND user_id=?').get(q.bank_id, req.user.id);
+  const bank = db.prepare('SELECT * FROM practice_banks WHERE id=?').get(q.bank_id);
   if (!bank) return res.status(403).json({ error: '无权操作' });
   const existing = db.prepare('SELECT id FROM practice_favorites WHERE user_id=? AND question_id=?').get(req.user.id, q.id);
   if (existing) {
