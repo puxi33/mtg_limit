@@ -5518,7 +5518,7 @@ function hydrateQuestion(q, userId) {
 
 // ---- Banks ----
 app.get('/api/practice/banks', authMiddleware, (req, res) => {
-  const banks = db.prepare('SELECT * FROM practice_banks WHERE user_id=? ORDER BY updated_at DESC, created_at DESC').all(req.user.id);
+  const banks = db.prepare('SELECT * FROM practice_banks ORDER BY updated_at DESC, created_at DESC').all();
   const result = banks.map(b => {
     const chapters = db.prepare('SELECT COUNT(*) c FROM practice_chapters WHERE bank_id=?').get(b.id).c;
     const questions = db.prepare('SELECT COUNT(*) c FROM practice_questions WHERE bank_id=?').get(b.id).c;
@@ -5774,9 +5774,8 @@ app.get('/api/practice/wrong-book', authMiddleware, (req, res) => {
   const { bank_id } = req.query;
   let sql = `SELECT q.*, wb.wrong_count, wb.last_wrong_at FROM practice_wrong_book wb
     JOIN practice_questions q ON q.id = wb.question_id
-    JOIN practice_banks b ON b.id = q.bank_id
-    WHERE wb.user_id=? AND b.user_id=?`;
-  const params = [req.user.id, req.user.id];
+    WHERE wb.user_id=?`;
+  const params = [req.user.id];
   if (bank_id) { sql += ' AND q.bank_id=?'; params.push(bank_id); }
   sql += ' ORDER BY wb.last_wrong_at DESC, wb.id DESC';
   const rows = db.prepare(sql).all(...params);
@@ -5798,9 +5797,8 @@ app.get('/api/practice/favorites', authMiddleware, (req, res) => {
   const { bank_id } = req.query;
   let sql = `SELECT q.* FROM practice_favorites f
     JOIN practice_questions q ON q.id = f.question_id
-    JOIN practice_banks b ON b.id = q.bank_id
-    WHERE f.user_id=? AND b.user_id=?`;
-  const params = [req.user.id, req.user.id];
+    WHERE f.user_id=?`;
+  const params = [req.user.id];
   if (bank_id) { sql += ' AND q.bank_id=?'; params.push(bank_id); }
   sql += ' ORDER BY f.created_at DESC, f.id DESC';
   const rows = db.prepare(sql).all(...params);
@@ -5838,16 +5836,16 @@ app.get('/api/practice/stats', authMiddleware, (req, res) => {
   const scope = [];
   let bankFilter = '';
   if (bank_id) { bankFilter = ' AND bank_id=?'; scope.push(bank_id); }
-  const totalQ = db.prepare(`SELECT COUNT(*) c FROM practice_questions q JOIN practice_banks b ON b.id=q.bank_id WHERE b.user_id=?${bank_id ? ' AND q.bank_id=?' : ''}`)
-    .get(...(bank_id ? [req.user.id, bank_id] : [req.user.id])).c;
+  const totalQ = db.prepare(`SELECT COUNT(*) c FROM practice_questions q WHERE 1=1${bank_id ? ' AND q.bank_id=?' : ''}`)
+    .get(...(bank_id ? [bank_id] : [])).c;
   const answeredAgg = db.prepare(`SELECT COUNT(*) total, SUM(is_correct) correct, COUNT(DISTINCT question_id) distinct_q
     FROM practice_answers WHERE user_id=?${bankFilter}`).get(req.user.id, ...scope);
   const wrongCount = db.prepare(`SELECT COUNT(*) c FROM practice_wrong_book wb JOIN practice_questions q ON q.id=wb.question_id
-    JOIN practice_banks b ON b.id=q.bank_id WHERE wb.user_id=? AND b.user_id=?${bank_id ? ' AND q.bank_id=?' : ''}`)
-    .get(...(bank_id ? [req.user.id, req.user.id, bank_id] : [req.user.id, req.user.id])).c;
+    WHERE wb.user_id=?${bank_id ? ' AND q.bank_id=?' : ''}`)
+    .get(...(bank_id ? [req.user.id, bank_id] : [req.user.id])).c;
   const favCount = db.prepare(`SELECT COUNT(*) c FROM practice_favorites f JOIN practice_questions q ON q.id=f.question_id
-    JOIN practice_banks b ON b.id=q.bank_id WHERE f.user_id=? AND b.user_id=?${bank_id ? ' AND q.bank_id=?' : ''}`)
-    .get(...(bank_id ? [req.user.id, req.user.id, bank_id] : [req.user.id, req.user.id])).c;
+    WHERE f.user_id=?${bank_id ? ' AND q.bank_id=?' : ''}`)
+    .get(...(bank_id ? [req.user.id, bank_id] : [req.user.id])).c;
   const total = answeredAgg.total || 0;
   const correct = answeredAgg.correct || 0;
   res.json({
